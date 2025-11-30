@@ -105,6 +105,13 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 "bound_output_0_4": True                    # Constrain output to [0,4]
 ```
 
+## Dataset
+
+The model was trained and evaluated on the LDCTIQA2023 Challenge dataset:
+
+- **Training Data:** [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
+- **Test Data:** [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
+
 ## Data Format
 
 The training and test data should be organized as:
