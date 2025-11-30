@@ -5,7 +5,7 @@ from typing import Dict, Any
 # =========================================
 CONFIG: Dict[str, Any] = {
     # File paths - Update these paths according to your environment
-    "checkpoint_path": "./checkpoints/medsiglip_iqa_model",
+    "checkpoint_path": "./checkpoints/medsiglip_iqa",
 
     "json_path": "./data/train.json",
     "data_dir": "./data/train/images",
