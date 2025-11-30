@@ -76,7 +76,7 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 
 ### File Paths
 ```python
-"checkpoint_path": "path/to/save/model"      # Model checkpoint save location
+"checkpoint_path": "path/to/save/medsiglip_iqa"      # Model checkpoint save location
 "json_path": "path/to/train.json"            # Training data annotations
 "data_dir": "path/to/train/images"           # Training images directory
 "test_json_path": "path/to/test.json"        # Test data annotations
@@ -139,7 +139,7 @@ The training script will:
 - Load and preprocess the dataset
 - Perform 5-fold cross-validation
 - Save the best model checkpoint based on validation loss for each fold
-- Copy the best fold model as `best_model.pth`
+- Copy the best fold model as `medsiglip_iqa_best.pth`
 - Log training/validation metrics (loss, MAE, RMSE, Pearson correlation) per epoch
 
 ### Testing
@@ -151,7 +151,7 @@ python test.py
 
 Before running, update `config.py`:
 ```python
-"checkpoint_path": "path/to/best_model_fold1.pth"
+"checkpoint_path": "path/to/medsiglip_iqa_best.pth"
 ```
 
 The test script outputs:
@@ -188,6 +188,11 @@ Higher values (closer to 1.0) indicate better performance.
 
 Pre-trained model weights are available on Google Drive:
 - 📥 **[Download best_model.pth](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing)**
+
+**Test Results:**
+| PLCC | SROCC | KROCC | OVERALL |
+|------|-------|-------|---------|
+| 0.9575 | 0.9561 | 0.8301 | 2.7436 |
 
 To use the pre-trained model:
 1. Download `best_model.pth` from the link above
