@@ -1,6 +1,6 @@
-# MedSigLIP-IQA: Low-Dose CT Image Quality Assessment
+# Prompt-Conditioned FiLM and Multi-Scale Fusion on MedSigLIP for Low-Dose CT Quality Assessment
 
-This project implements a deep learning-based Image Quality Assessment (IQA) model for low-dose CT images using MedSigLIP with FiLM (Feature-wise Linear Modulation) prompt conditioning and multi-scale feature extraction.
+This project implements a prompt-conditioned framework built on MedSigLIP that injects textual priors via Feature-wise Linear Modulation (FiLM) and multi-scale pooling. Text prompts condition patch-token features on clinical intent, enabling data-efficient learning. The architecture combines global, local, and texture-aware pooling through separate regression heads fused by a lightweight MLP, trained with pairwise ranking loss.
 
 ## Project Overview
 
@@ -9,7 +9,7 @@ The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT i
 1. **MedSigLIP Backbone** - Medical domain-adapted vision-language model
 2. **FiLM Prompt Conditioning** - Text-guided feature modulation for task-specific adaptation
 3. **Multi-Scale Feature Extraction** - Global, local, and texture-level quality assessment
-4. **RankNet Loss** - Pairwise ranking loss combined with MSE for better correlation metrics
+4. **Pairwise Ranking Loss** - RankNet-based loss for better correlation metrics
 
 ## Directory Structure
 
@@ -21,7 +21,9 @@ The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT i
 ├── test.py             # Evaluation script with PLCC, SROCC, KROCC metrics
 ├── requirements.txt    # Python dependencies
 ├── README.md           # This file
-└── .gitignore          # Git ignore file
+├── .gitignore          # Git ignore file
+└── assets/
+    └── architecture.png
 ```
 
 ## Key Features
@@ -44,14 +46,14 @@ The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT i
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/medsiglip-iqa.git
-   cd medsiglip-iqa
+   git clone https://github.com/itu-biai/medsiglip_ldct_iqa.git
+   cd medsiglip_ldct_iqa
    ```
 
 2. Create a conda environment and install dependencies:
    ```bash
-   conda create -n medsiglip-iqa python=3.10
-   conda activate medsiglip-iqa
+   conda create -n medsiglip_ldct_iqa python=3.10
+   conda activate medsiglip_ldct_iqa
    pip install -r requirements.txt
    ```
 
@@ -89,6 +91,8 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 "weight_decay": 1e-4       # AdamW weight decay
 "grad_accum_steps": 2      # Gradient accumulation steps
 "use_amp": True            # Enable mixed precision training
+"T_max": 100                # Cosine annealing T_max (usually = num_epochs)
+"eta_min": 1e-7            # Cosine annealing minimum learning rate
 ```
 
 ### Model Parameters
@@ -134,8 +138,9 @@ python train.py
 The training script will:
 - Load and preprocess the dataset
 - Perform 5-fold cross-validation
-- Save the best model checkpoint for each fold
-- Report MAE, RMSE, and Pearson correlation for each fold
+- Save the best model checkpoint based on validation loss for each fold
+- Copy the best fold model as `best_model.pth`
+- Log training/validation metrics (loss, MAE, RMSE, Pearson correlation) per epoch
 
 ### Testing
 
@@ -162,15 +167,13 @@ The test script outputs:
 
 *Figure: Prompt-conditioned FiLM with multi-scale (global/local/texture) pooling.*
 
-### Loss Function (RankNetMSELoss)
+### Loss Function (Pairwise Ranking Loss)
 
-Combined loss for regression and ranking:
+We use pure pairwise ranking loss following RankNet with temperature $\tau_{\mathrm{rank}}=0.5$:
 
-$$\mathcal{L} = \alpha \cdot \text{MSE} + \beta \cdot \mathcal{L}_{\text{rank}}$$
+$$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}} \log\left(1+e^{\frac{-s_{ij}(\hat y_i-\hat y_j)}{\tau_{\mathrm{rank}}}}\right)$$
 
-Where the pairwise ranking loss is:
-
-$$\mathcal{L}_{\text{rank}} = \frac{1}{N^2} \sum_{i,j} w_{ij} \log(1 + e^{-s_{ij}(\hat{y}_i - \hat{y}_j)/\tau})$$
+where $\mathcal{P}$ is the set of non-tied pairs and $s_{ij}=\mathrm{sign}(y_i-y_j)$.
 
 ## Evaluation Metrics
 
@@ -183,7 +186,16 @@ Higher values (closer to 1.0) indicate better performance.
 
 ## Pre-trained Weights
 
-Pre-trained model weights are not included in this repository. You can train the models using the provided scripts. Model checkpoints are saved with fold numbers (e.g., `model_fold1.pth`).
+Pre-trained model weights are available on Google Drive:
+- 📥 **[Download best_model.pth](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing)**
+
+To use the pre-trained model:
+1. Download `best_model.pth` from the link above
+2. Place it in the project root directory
+3. Set in `config.py`:
+```python
+"checkpoint_path": "best_model.pth"
+```
 
 ## License
 
