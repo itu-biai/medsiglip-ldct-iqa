@@ -112,27 +112,6 @@ The model was trained and evaluated on the LDCTIQA2023 Challenge dataset:
 - **Training Data:** [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
 - **Test Data:** [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
 
-## Data Format
-
-The training and test data should be organized as:
-
-```
-data_dir/
-├── image1.png
-├── image2.png
-└── ...
-
-train.json / test.json:
-{
-    "image1.png": 3.5,
-    "image2.png": 2.1,
-    ...
-}
-```
-
-- **Images**: PNG, JPG, TIFF, or DICOM formats supported
-- **Annotations**: JSON file mapping filename to MOS score (0-4 scale)
-
 ## Usage
 
 ### Training
