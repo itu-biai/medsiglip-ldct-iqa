@@ -1,14 +1,23 @@
 # Prompt-Conditioned FiLM and Multi-Scale Fusion on MedSigLIP for Low-Dose CT Quality Assessment
 
-This project implements a prompt-conditioned framework built on MedSigLIP that injects textual priors via Feature-wise Linear Modulation (FiLM) and multi-scale pooling. Text prompts condition patch-token features on clinical intent, enabling data-efficient learning. The architecture combines global, local, and texture-aware pooling through separate regression heads fused by a lightweight MLP, trained with pairwise ranking loss.
+This project implements a prompt-conditioned framework built on MedSigLIP that
+injects textual priors via Feature-wise Linear Modulation (FiLM) and multi-scale
+pooling. Text prompts condition patch-token features on clinical intent,
+enabling data-efficient learning. The architecture combines global, local, and
+texture-aware pooling through separate regression heads fused by a lightweight
+MLP, trained with pairwise ranking loss.
 
 ## Project Overview
 
-The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT images, enabling automated quality assessment for medical imaging applications. Key innovations include:
+The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT
+images, enabling automated quality assessment for medical imaging applications.
+Key innovations include:
 
 1. **MedSigLIP Backbone** - Medical domain-adapted vision-language model
-2. **FiLM Prompt Conditioning** - Text-guided feature modulation for task-specific adaptation
-3. **Multi-Scale Feature Extraction** - Global, local, and texture-level quality assessment
+2. **FiLM Prompt Conditioning** - Text-guided feature modulation for
+   task-specific adaptation
+3. **Multi-Scale Feature Extraction** - Global, local, and texture-level quality
+   assessment
 4. **Pairwise Ranking Loss** - RankNet-based loss for better correlation metrics
 
 ## Directory Structure
@@ -28,9 +37,11 @@ The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT i
 
 ## Key Features
 
-- **MedSigLIP Integration**: Leverages Google's medical domain SigLIP model (`google/medsiglip-448`)
-- **FiLM Conditioning**: Text prompts guide the model to focus on diagnostic quality aspects
-- **Multi-Scale Pooling**: 
+- **MedSigLIP Integration**: Leverages Google's medical domain SigLIP model
+  (`google/medsiglip-448`)
+- **FiLM Conditioning**: Text prompts guide the model to focus on diagnostic
+  quality aspects
+- **Multi-Scale Pooling**:
   - Global average pooling for overall quality
   - Local average pooling (4 regions) for regional quality
   - Texture max pooling (2 regions) for texture/detail quality
@@ -60,6 +71,7 @@ The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT i
 ## Requirements
 
 The project dependencies are listed in `requirements.txt`:
+
 - PyTorch (≥2.0.0) and torchvision (≥0.15.0) for deep learning
 - Transformers (≥4.30.0) for MedSigLIP model
 - NumPy (≥1.24.0) for numerical computations
@@ -72,9 +84,11 @@ The project dependencies are listed in `requirements.txt`:
 
 ## Configuration
 
-All configuration settings are centralized in `config.py`. Key parameters to adjust:
+All configuration settings are centralized in `config.py`. Key parameters to
+adjust:
 
 ### File Paths
+
 ```python
 "checkpoint_path": "path/to/save/medsiglip_iqa"      # Model checkpoint save location
 "json_path": "path/to/train.json"            # Training data annotations
@@ -84,6 +98,7 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 ```
 
 ### Training Parameters
+
 ```python
 "learning_rate": 1e-5      # Learning rate
 "batch_size": 4            # Batch size per GPU
@@ -96,6 +111,7 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 ```
 
 ### Model Parameters
+
 ```python
 "medsiglip_model": "google/medsiglip-448"  # Backbone model
 "image_size": 448                           # Input image resolution
@@ -109,8 +125,10 @@ All configuration settings are centralized in `config.py`. Key parameters to adj
 
 The model was trained and evaluated on the LDCTIQA2023 Challenge dataset:
 
-- **Training Data:** [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
-- **Test Data:** [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
+- **Training Data:**
+  [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
+- **Test Data:**
+  [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
 
 ## Usage
 
@@ -122,11 +140,13 @@ python train.py
 ```
 
 The training script will:
+
 - Load and preprocess the dataset
 - Perform 5-fold cross-validation
 - Save the best model checkpoint based on validation loss for each fold
 - Copy the best fold model as `medsiglip_iqa_best.pth`
-- Log training/validation metrics (loss, MAE, RMSE, Pearson correlation) per epoch
+- Log training/validation metrics (loss, MAE, RMSE, Pearson correlation) per
+  epoch
 
 ### Testing
 
@@ -136,13 +156,15 @@ python test.py
 ```
 
 Before running, update `config.py`:
+
 ```python
 "checkpoint_path": "path/to/medsiglip_iqa_best.pth"
 ```
 
 The test script outputs:
+
 - **PLCC**: Pearson Linear Correlation Coefficient
-- **SROCC**: Spearman Rank Order Correlation Coefficient  
+- **SROCC**: Spearman Rank Order Correlation Coefficient
 - **KROCC**: Kendall Rank Order Correlation Coefficient
 
 ## Model Architecture
@@ -151,65 +173,78 @@ The test script outputs:
 
 ![Model Architecture](assets/architecture.png)
 
-*Figure: Prompt-conditioned FiLM with multi-scale (global/local/texture) pooling.*
+_Figure: Prompt-conditioned FiLM with multi-scale (global/local/texture)
+pooling._
 
 ### Loss Function (Pairwise Ranking Loss)
 
-We use pure pairwise ranking loss following RankNet with temperature $\tau_{\mathrm{rank}}=0.5$:
+We use pure pairwise ranking loss following RankNet with temperature
+$\tau_{\mathrm{rank}}=0.5$:
 
 $$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}} \log\left(1+e^{\frac{-s_{ij}(\hat y_i-\hat y_j)}{\tau_{\mathrm{rank}}}}\right)$$
 
-where $\mathcal{P}$ is the set of non-tied pairs and $s_{ij}=\mathrm{sign}(y_i-y_j)$.
+where $\mathcal{P}$ is the set of non-tied pairs and
+$s_{ij}=\mathrm{sign}(y_i-y_j)$.
 
 ## Evaluation Metrics
 
 The model is evaluated using standard IQA correlation metrics:
+
 - **PLCC (Pearson Linear Correlation Coefficient)**: Measures linear correlation
-- **SROCC (Spearman Rank Order Correlation Coefficient)**: Measures monotonic relationship
-- **KROCC (Kendall Rank Order Correlation Coefficient)**: Measures ordinal association
+- **SROCC (Spearman Rank Order Correlation Coefficient)**: Measures monotonic
+  relationship
+- **KROCC (Kendall Rank Order Correlation Coefficient)**: Measures ordinal
+  association
 
 Higher values (closer to 1.0) indicate better performance.
 
 ## Pre-trained Weights
 
 Pre-trained model weights are available on Google Drive:
-- 📥 **[Download best_model.pth](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing)**
+
+- 📥
+  **[Download best_model.pth](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing)**
 
 **Test Results:**
-| PLCC | SROCC | KROCC | OVERALL |
-|------|-------|-------|---------|
-| 0.9575 | 0.9561 | 0.8301 | 2.7436 |
+
+| PLCC   | SROCC  | KROCC  | OVERALL |
+| ------ | ------ | ------ | ------- |
+| 0.9575 | 0.9561 | 0.8301 | 2.7436  |
 
 To use the pre-trained model:
+
 1. Download `best_model.pth` from the link above
 2. Place it in the project root directory
 3. Set in `config.py`:
+
 ```python
 "checkpoint_path": "best_model.pth"
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
+for details.
 
 ## Citation
 
 If you use this code in your research, please consider citing:
 
 ```bibtex
-@inproceedings{to_be_filled,
+@article{demiroglu2025prompt,
   title={Prompt-Conditioned FiLM and Multi-Scale Fusion on MedSigLIP for Low-Dose CT Quality Assessment},
-  author={To be filled},
-  booktitle={To be filled},
-  year={2025},
-  url={To be filled}
+  author={Demiroglu, Tolga and Unal, Mehmet Ozan and Ertas, Metin and Yildirim, Isa},
+  journal={arXiv preprint arXiv:2511.12256},
+  year={2025}
 }
 ```
 
 ## Acknowledgements
 
-- [Google MedSigLIP](https://huggingface.co/google/medsiglip-448) for the pretrained medical vision-language model
-- [LDCT-IQA Challenge](https://ldctiqac2023.grand-challenge.org/) for the dataset
+- [Google MedSigLIP](https://huggingface.co/google/medsiglip-448) for the
+  pretrained medical vision-language model
+- [LDCT-IQA Challenge](https://ldctiqac2023.grand-challenge.org/) for the
+  dataset
 
 ## Contact
 

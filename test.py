@@ -1,4 +1,5 @@
 import os
+
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import json
@@ -30,6 +31,7 @@ print(f"Device used: {device}")
 # -------------------- CHECKPOINT PATH --------------------
 CHECKPOINT_PATH = "./checkpoints/medsiglip_iqa_model_best.pth"
 
+
 # -------------------- HELPER FUNCTIONS --------------------
 def build_processor(name):
     try:
@@ -41,11 +43,15 @@ def build_processor(name):
         print("↪️ Falling back to SiglipProcessor: google/siglip-base-patch16-224")
         return SiglipProcessor.from_pretrained("google/siglip-base-patch16-224")
 
-def safe_float(x):
-    try: return float(x)
-    except: return np.nan
 
-def index_files(root, exts={".png",".jpg",".jpeg",".bmp",".tif",".tiff",".dcm"}):
+def safe_float(x):
+    try:
+        return float(x)
+    except:
+        return np.nan
+
+
+def index_files(root, exts={".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm"}):
     idx = {}
     for dp, _, fns in os.walk(root):
         for fn in fns:
@@ -53,12 +59,13 @@ def index_files(root, exts={".png",".jpg",".jpeg",".bmp",".tif",".tiff",".dcm"})
             base = os.path.basename(fn)
             lowb = base.lower()
             stem = os.path.splitext(lowb)[0]
-            ext  = os.path.splitext(lowb)[1]
+            ext = os.path.splitext(lowb)[1]
             if exts and ext not in exts:
                 continue
             idx[lowb] = full
             idx[stem] = full
     return idx
+
 
 def load_test_list(json_path, data_dir):
     # Load ground truth data
@@ -73,11 +80,12 @@ def load_test_list(json_path, data_dir):
             continue
         k = str(k)
         full = os.path.join(data_dir, k)
-        
+
         # Direct match
         if os.path.exists(full):
-            rows.append((full, safe_float(v))); continue
-            
+            rows.append((full, safe_float(v)))
+            continue
+
         # Fuzzy match (case insensitive, extension agnostic)
         candidates = [
             k.lower(),
@@ -88,22 +96,26 @@ def load_test_list(json_path, data_dir):
         found = None
         for c in candidates:
             if c in file_index:
-                found = file_index[c]; break
-            for ext in [".png",".jpg",".jpeg",".bmp",".tif",".tiff",".dcm"]:
-                if (c+ext) in file_index:
-                    found = file_index[c+ext]; break
-            if found: break
-            
+                found = file_index[c]
+                break
+            for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm"]:
+                if (c + ext) in file_index:
+                    found = file_index[c + ext]
+                    break
+            if found:
+                break
+
         if found:
             rows.append((found, safe_float(v)))
         else:
             missing.append(k)
 
-    df = pd.DataFrame(rows, columns=["path","mos"]).dropna(subset=["mos"])
+    df = pd.DataFrame(rows, columns=["path", "mos"]).dropna(subset=["mos"])
     print(f"Test images: {len(df)} | Missing: {len(missing)}")
     if missing[:5]:
         print("Sample missing:", missing[:5])
     return df
+
 
 def read_image(path):
     ext = os.path.splitext(path)[1].lower()
@@ -114,8 +126,9 @@ def read_image(path):
             img = ds.pixel_array.astype(np.float32)
             # Normalize DICOM to 0-255
             img = img - img.min()
-            if img.max() > 0: img = img / img.max()
-            img = (img*255).astype(np.uint8)
+            if img.max() > 0:
+                img = img / img.max()
+            img = (img * 255).astype(np.uint8)
             if img.ndim == 2:
                 img = np.stack([img, img, img], -1)
             return img
@@ -124,16 +137,20 @@ def read_image(path):
     # Handle standard image formats
     return iio.imread(path)
 
+
 # -------------------- DATASET --------------------
 class IQATestDataset(Dataset):
-    def __init__(self, df, processor, image_size=448, transform=None, return_path=False):
+    def __init__(
+        self, df, processor, image_size=448, transform=None, return_path=False
+    ):
         self.df = df.reset_index(drop=True)
         self.processor = processor
         self.image_size = image_size
         self.transform = transform
         self.return_path = return_path
 
-    def __len__(self): return len(self.df)
+    def __len__(self):
+        return len(self.df)
 
     def __getitem__(self, idx):
         p = self.df.loc[idx, "path"]
@@ -173,24 +190,25 @@ class IQATestDataset(Dataset):
         if self.transform is not None:
             pil = self.transform(pil)
         else:
-            pil = pil.resize((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+            pil = pil.resize(
+                (self.image_size, self.image_size), Image.Resampling.LANCZOS
+            )
 
         # Process with processor
         try:
             inputs = self.processor(
-                images=pil,
-                return_tensors="pt",
-                do_resize=False,
-                do_center_crop=False
+                images=pil, return_tensors="pt", do_resize=False, do_center_crop=False
             )
         except TypeError:
             inputs = self.processor(images=pil, return_tensors="pt")
         except Exception as e:
             print(f"Processor error: {e} — manual normalization.")
-            tr = T.Compose([
-                T.ToTensor(),
-                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
+            tr = T.Compose(
+                [
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ]
+            )
             inputs = {"pixel_values": tr(pil).unsqueeze(0)}
 
         # Remove batch dimension
@@ -202,10 +220,9 @@ class IQATestDataset(Dataset):
         y = torch.tensor(y, dtype=torch.float32)
         return (inputs, y, p) if self.return_path else (inputs, y)
 
+
 # Deterministic val/test transform
-val_test_transform = T.Compose([
-    T.Resize((CONFIG["image_size"], CONFIG["image_size"]))
-])
+val_test_transform = T.Compose([T.Resize((CONFIG["image_size"], CONFIG["image_size"]))])
 
 # -------------------- PROCESSOR / MODEL --------------------
 processor = build_processor(CONFIG["model_name"])
@@ -214,15 +231,17 @@ text_inputs = None
 if CONFIG["use_text_prompt"]:
     try:
         ti = processor(text=CONFIG["text_prompt"], return_tensors="pt")
-        text_inputs = {k:v for k, v in ti.items() if isinstance(v, torch.Tensor)}
+        text_inputs = {k: v for k, v in ti.items() if isinstance(v, torch.Tensor)}
     except Exception as e:
         print("Text processor error:", e)
         text_inputs = None
 
-model = PromptedMultiScaleMedSigLIPIQA(CONFIG["model_name"],
-                                        text_inputs=text_inputs,
-                                        film_strength=CONFIG["film_strength"],
-                                        bound=CONFIG["bound_output_0_4"]).to(device)
+model = PromptedMultiScaleMedSigLIPIQA(
+    CONFIG["model_name"],
+    text_inputs=text_inputs,
+    film_strength=CONFIG["film_strength"],
+    bound=CONFIG["bound_output_0_4"],
+).to(device)
 
 state = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
 model.load_state_dict(state, strict=False)
@@ -235,29 +254,35 @@ if len(df_test) == 0:
     raise SystemExit("❌ Test list is empty. Check paths and test.json content.")
 
 test_ds = IQATestDataset(
-    df_test, processor,
+    df_test,
+    processor,
     image_size=CONFIG["image_size"],
     transform=val_test_transform,
-    return_path=False
+    return_path=False,
 )
-test_dl = DataLoader(test_ds, batch_size=CONFIG["batch_size"], shuffle=False,
-                     num_workers=CONFIG["num_workers"], pin_memory=True)
+test_dl = DataLoader(
+    test_ds,
+    batch_size=CONFIG["batch_size"],
+    shuffle=False,
+    num_workers=CONFIG["num_workers"],
+    pin_memory=True,
+)
 
 # -------------------- PREDICTION + METRICS --------------------
 all_preds, all_tgts = [], []
 with torch.no_grad():
     for inputs, y in tqdm(test_dl, desc="Test"):
         pv = inputs["pixel_values"].to(device, non_blocking=True)
-        y  = y.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
         yhat = model({"pixel_values": pv})
         all_preds.extend(yhat.detach().cpu().numpy().tolist())
         all_tgts.extend(y.detach().cpu().numpy().tolist())
 
 all_preds = np.asarray(all_preds, dtype=np.float64)
-all_tgts  = np.asarray(all_tgts,  dtype=np.float64)
+all_tgts = np.asarray(all_tgts, dtype=np.float64)
 
 results = {
-    "plcc":  abs(pearsonr(all_preds,  all_tgts)[0]),
+    "plcc": abs(pearsonr(all_preds, all_tgts)[0]),
     "srocc": abs(spearmanr(all_preds, all_tgts)[0]),
     "krocc": abs(kendalltau(all_preds, all_tgts)[0]),
 }
