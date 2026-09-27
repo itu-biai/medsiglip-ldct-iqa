@@ -1,52 +1,52 @@
-# Prompt-Conditioned FiLM and Multi-Scale Fusion on MedSigLIP for Low-Dose CT Quality Assessment
+# MedSigLIP for No-Reference Low-Dose CT Quality Assessment: Representation over Architecture, and What the Benchmark Rewards
 
-This project implements a prompt-conditioned framework built on MedSigLIP that
-injects textual priors via Feature-wise Linear Modulation (FiLM) and multi-scale
-pooling. Text prompts condition patch-token features on clinical intent,
-enabling data-efficient learning. The architecture combines global, local, and
-texture-aware pooling through separate regression heads fused by a lightweight
-MLP, trained with pairwise ranking loss.
+Official code for a prompt-conditioned MedSigLIP framework for no-reference
+image quality assessment (NR-IQA) of low-dose CT (LDCT). Clinical text prompts
+are injected into patch-token features via Feature-wise Linear Modulation
+(FiLM), the modulated tokens are aggregated by global, local and texture
+pooling branches, and the model is trained with a pairwise ranking loss to
+predict the Mean Opinion Score (MOS, 0–4) of a CT slice.
 
-## Project Overview
+![Model Architecture](assets/architecture.png)
 
-The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT
-images, enabling automated quality assessment for medical imaging applications.
-Key components:
+_A low-dose CT slice is encoded into 1,024 patch tokens (d = 1,152) by the
+MedSigLIP vision encoder. The frozen MedSigLIP text encoder embeds a clinical
+prompt, and a FiLM module maps it to per-channel scale γ and shift β. The
+modulated tokens are pooled by three parallel branches (global average, local
+4-region average, 2-bin max), and the sub-scores are fused by an MLP and
+bounded to [0, 4] by a temperature-scaled sigmoid (τ = 2.0)._
 
-1. **MedSigLIP Backbone** - Medical domain-adapted vision-language model; the
-   vision encoder is fine-tuned end-to-end, the text encoder stays frozen
-2. **FiLM Prompt Conditioning** - Text-guided feature modulation for
-   task-specific adaptation
-3. **Multi-Scale Feature Extraction** - Global, local, and texture-level quality
-   assessment
-4. **Pairwise Ranking Loss** - RankNet-based loss for better correlation metrics
+## Key Findings
 
-## What's New (v2)
+On the LDCTIQA2023 benchmark, multi-seed evaluation (3 seeds × 5 folds) gives
+PLCC = 0.9348 ± 0.0086 and Overall = 2.6723 ± 0.0254, at approximately
+3rd-place level among the challenge entries. Controlled ablations show where
+this performance comes from:
 
-- **New default prompt (`len2`, ~25 tokens)** — the 25–35 token range had the
-  highest mean Overall in the prompt-length study (see [Results](#results)).
-  The arXiv v1 detailed-rubric prompt is kept as `PAPER_V1_PROMPT` in
-  `config.py`.
-- **Multi-fold evaluation** — `test.py` evaluates every fold checkpoint and
-  reports per-fold results plus mean ± std (or a single checkpoint with
-  `--ckpt`).
-- **Command-line interface** for `train.py`, `test.py` and the new
-  `predict.py` (MOS for arbitrary images).
-- **Self-describing runs** — `train.py` writes `{exp}_config.json` (prompt and
-  hyperparameters) next to the checkpoints; `test.py`/`predict.py` read it back,
-  so a checkpoint is always evaluated with the prompt it was trained with (the
-  prompt embedding is not stored inside the `.pth`).
-- **Compatibility** with `transformers` 5.x and the `torch.amp` API.
-- **Fixes** — the fold summary now reports best-epoch metrics; loading errors,
-  unreadable images and failed batches raise instead of silently falling back.
-- The checkpoint format is unchanged (plain `state_dict`), so existing
-  checkpoints load as before.
+- **Representation, not architecture.** MedSigLIP outperforms EfficientNet-B0
+  by +0.0955 Overall and BiomedCLIP by +0.2144; medical-domain fine-tuning
+  (MedSigLIP vs. SigLIP, +0.1492) is the clearest single factor.
+- **FiLM and pooling add little.** FiLM gives no reliable gain on any backbone
+  and modulates only 3–4% of channels, nearly identically across prompts
+  (cosine similarity > 0.985). The three pooling branches are near-redundant
+  (|ρ| > 0.99), yielding only a within-noise gain.
+- **What the benchmark rewards.** A single high-frequency energy scalar
+  correlates with radiologist MOS at 98% of the model's own correlation and,
+  after a monotone rescaling fitted on the training labels, reaches
+  Overall = 2.618, level with the 5th-place entry.
 
-## Directory Structure
+### Intended use and limitations
+
+The model is trained only on noise and streak degradations, and it has a
+clinically significant **smoothness bias**: Gaussian-blurred images
+(σ = 2.0) score on average +0.93 MOS above their originals, with 0% correct
+preference. **It should therefore not be used to rank denoising algorithms.**
+
+## Repository Structure
 
 ```
 .
-├── config.py           # Default configuration and prompts (LEN2_PROMPT, PAPER_V1_PROMPT)
+├── config.py           # Default configuration and prompts (DEFAULT_PROMPT, RUBRIC_PROMPT)
 ├── data.py             # Annotation loading, image IO, dataset, transforms, processor
 ├── model.py            # PromptedMultiScaleMedSigLIPIQA, RankNetMSELoss, checkpoint helpers
 ├── train.py            # 5-fold cross-validation training
@@ -84,7 +84,8 @@ Tested with Python 3.11, PyTorch 2.11 and Transformers 5.17.
 
 ## Dataset
 
-The model was trained and evaluated on the LDCTIQA2023 Challenge dataset:
+LDCTIQA2023 Challenge: 1,000 training and 300 test images (2D axial slices)
+with radiologist-assigned MOS on a 0–4 scale.
 
 - **Training Data:**
   [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
@@ -108,7 +109,7 @@ data/
 ```mermaid
 flowchart LR
     TR["data/train<br/>train.json + images"] --> T["train.py<br/>5-fold CV"]
-    T --> C["checkpoints/<br/>len2_fold1..5.pth<br/>len2_best.pth<br/>len2_config.json<br/>len2_cv_summary.json"]
+    T --> C["checkpoints/<br/>medsiglip_iqa_fold1..5.pth<br/>medsiglip_iqa_best.pth<br/>medsiglip_iqa_config.json<br/>medsiglip_iqa_cv_summary.json"]
     TE["data/test<br/>test.json + images"] --> E["test.py<br/>per-fold + mean ± std"]
     C --> E
     C --> P["predict.py<br/>MOS for new images"]
@@ -122,7 +123,7 @@ python train.py
 
 # Custom paths / experiment name
 python train.py --json data/train/train.json --data-dir data/train/image \
-                --checkpoint-dir checkpoints --exp-name len2
+                --checkpoint-dir checkpoints --exp-name medsiglip_iqa
 
 # Train only some folds, or with another prompt
 python train.py --folds 3
@@ -130,35 +131,34 @@ python train.py --prompt "Assess LDCT image quality." --exp-name short_prompt
 ```
 
 For each fold, the epoch with the lowest validation loss is saved as
-`{exp}_fold{k}.pth`. The best fold (lowest `select_metric`, validation loss by
-default) is copied to `{exp}_best.pth`. Per-fold best-epoch metrics (loss, MAE,
-RMSE, Pearson) are written to `{exp}_cv_summary.json`.
+`{exp_name}_fold{k}.pth`, and the best fold is copied to `{exp_name}_best.pth`.
+Per-fold best-epoch metrics are written to `{exp_name}_cv_summary.json`, and
+the prompt and hyperparameters to `{exp_name}_config.json`. The prompt
+embedding is not stored inside the `.pth`; `test.py` and `predict.py` read it
+back from `{exp_name}_config.json`, so a checkpoint is always evaluated with
+the prompt it was trained with.
 
 ### Testing
 
 ```bash
 # All folds in a directory -> per-fold table, mean ± std, checkpoints/test_results.json
-python test.py --ckpt-dir checkpoints --exp-name len2
+python test.py --ckpt-dir checkpoints --exp-name medsiglip_iqa
 
 # A single checkpoint
-python test.py --ckpt checkpoints/len2_best.pth
+python test.py --ckpt checkpoints/medsiglip_iqa_best.pth
 
 # Custom test set and per-image predictions
 python test.py --ckpt-dir checkpoints --test-json data/test/test.json \
                --test-dir data/test/images --save-preds predictions.csv
 ```
 
-The test script reports the challenge metrics:
-
-- **PLCC**: Pearson Linear Correlation Coefficient
-- **SROCC**: Spearman Rank Order Correlation Coefficient
-- **KROCC**: Kendall Rank Order Correlation Coefficient
-- **Overall**: PLCC + SROCC + KROCC
+Reported metrics: PLCC, SROCC, KROCC and their sum (Overall), following the
+challenge protocol.
 
 ### Inference
 
 ```bash
-python predict.py --ckpt checkpoints/len2_fold3.pth scan1.tif scan2.tif --out predictions.csv
+python predict.py --ckpt checkpoints/medsiglip_iqa_fold3.pth scan1.tif scan2.tif --out predictions.csv
 ```
 
 ## Configuration
@@ -169,54 +169,35 @@ All defaults live in `config.py`; the most important ones:
 | --- | --- | --- |
 | `model_name` | `google/medsiglip-448` | Backbone |
 | `image_size` | `448` | Input resolution |
-| `text_prompt` | `LEN2_PROMPT` | Prompt injected via FiLM |
+| `text_prompt` | `DEFAULT_PROMPT` | Prompt injected via FiLM |
 | `film_strength` | `1.0` | FiLM strength *s* (0 = off) |
-| `text_freeze` / `freeze_backbone` | `True` / `False` | Freeze text / vision encoder |
-| `sigmoid_tau` | `2.0` | Output sigmoid temperature |
+| `text_freeze` / `freeze_backbone` | `True` / `False` | Text encoder frozen; vision encoder fine-tuned end-to-end |
+| `sigmoid_tau` | `2.0` | Output sigmoid temperature τ |
 | `bound_output_0_4` | `True` | Map output to [0, 4] |
 | `learning_rate` / `weight_decay` | `1e-5` / `1e-4` | AdamW |
 | `batch_size` × `grad_accum_steps` | `4` × `2` | Effective batch size 8 |
 | `num_epochs` | `22` | Epochs per fold |
 | `T_max` / `eta_min` | `100` / `1e-7` | Cosine annealing |
 | `use_amp` | `True` | Mixed precision |
-| `num_folds` / `seed` | `5` / `42` | Cross-validation |
-| `rank_weight` / `mse_weight` / `rank_tau` | `1.0` / `0.0` / `0.5` | Loss (pure pairwise ranking) |
-| `select_metric` | `val_loss` | Best-fold selection (`mae` in arXiv v1) |
+| `num_folds` / `seed` | `5` / `42` | Cross-validation (the paper also reports seeds 123 and 456) |
+| `rank_weight` / `mse_weight` / `rank_tau` | `1.0` / `0.0` / `0.5` | Pure pairwise ranking loss |
+| `select_metric` | `val_loss` | Best-fold selection (`val_loss` or `mae`) |
 | `early_stop_patience` | `None` | Early stopping (disabled) |
 
 ### Prompts
 
-The default prompt (`LEN2_PROMPT`, ~25 BPE tokens):
+The default prompt (`DEFAULT_PROMPT`, ~25 BPE tokens) names the perceptual
+dimensions radiologists attend to without enumerating the full rubric:
 
 > Assess LDCT diagnostic image quality using noise, artifacts, contrast,
 > sharpness, and anatomical visibility; assign MOS from 0 to 4.
 
-MedSigLIP's text encoder has a hard 64-token limit. To reproduce the arXiv v1
-setup, set `"text_prompt": PAPER_V1_PROMPT` and `"select_metric": "mae"` in
-`config.py`.
+`RUBRIC_PROMPT` holds the detailed-rubric variant. MedSigLIP's text encoder
+has a hard 64-token limit.
 
-## Model Architecture
+### Loss
 
-### PromptedMultiScaleMedSigLIPIQA
-
-![Model Architecture](assets/architecture.png)
-
-_Figure: Prompt-conditioned FiLM with multi-scale (global/local/texture)
-pooling._
-
-The MedSigLIP vision encoder turns a 448×448 slice into 32×32 = 1,024 patch
-tokens (d = 1,152). The frozen text encoder embeds the prompt, and a two-layer
-MLP maps it to FiLM parameters (γ, β) that modulate the tokens:
-$\tilde{H} = H \odot (1 + s\tanh\gamma) + s\beta$. Three pooling branches
-(global average, 4-region average, 2-bin max) feed separate regression heads,
-whose sub-scores are fused by an MLP and mapped to [0, 4] via
-$\hat{y} = 4\sigma(\mathrm{logit}/\tau)$. The implementation pools tokens from
-the second position onward (1,023 tokens); this is kept so the code matches the
-reported runs.
-
-### Loss Function (Pairwise Ranking Loss)
-
-We use pure pairwise ranking loss following RankNet with temperature
+Pure pairwise ranking loss following RankNet with temperature
 $\tau_{\mathrm{rank}}=0.5$:
 
 $$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}} \log\left(1+e^{\frac{-s_{ij}(\hat y_i-\hat y_j)}{\tau_{\mathrm{rank}}}}\right)$$
@@ -224,10 +205,15 @@ $$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}
 where $\mathcal{P}$ is the set of non-tied pairs and
 $s_{ij}=\mathrm{sign}(y_i-y_j)$.
 
+### Implementation note
+
+SigLIP has no CLS token; the model pools patch tokens from the second position
+onward (1,023 of the 1,024 tokens). This is kept so that the code matches the
+reported runs.
+
 ## Results
 
-LDCTIQA2023 test set (300 images), default `len2` prompt. Numbers are from the
-extended version of the paper (under review).
+LDCTIQA2023 test set (300 images), default prompt.
 
 | Method | PLCC | SROCC | KROCC | Overall |
 | ------ | ---- | ----- | ----- | ------- |
@@ -254,6 +240,19 @@ mean is the primary estimate.
 | 5 | 0.9346 | 0.9387 | 0.7950 | 2.6682 |
 | Mean ± std | 0.9431 ± 0.009 | 0.9459 ± 0.006 | 0.8095 ± 0.012 | 2.6985 ± 0.026 |
 
+**Backbone comparison (Seed 42, 5 folds, mean ± std; same head and training
+protocol):**
+
+| Vision | Text | PLCC | SROCC | KROCC | Overall |
+| ------ | ---- | ---- | ----- | ----- | ------- |
+| EfficientNet-B0 | — | 0.9173 ± 0.007 | 0.9226 ± 0.009 | 0.7630 ± 0.015 | 2.6030 ± 0.030 |
+| EfficientNet-B0 | PubMedBERT | 0.9156 ± 0.005 | 0.9190 ± 0.006 | 0.7573 ± 0.010 | 2.5918 ± 0.021 |
+| ResNet-18 | — | 0.9005 ± 0.002 | 0.8998 ± 0.003 | 0.7277 ± 0.004 | 2.5280 ± 0.009 |
+| ResNet-18 | PubMedBERT | 0.8949 ± 0.006 | 0.8945 ± 0.006 | 0.7184 ± 0.009 | 2.5077 ± 0.022 |
+| BiomedCLIP | BiomedCLIP | 0.8814 ± 0.007 | 0.8894 ± 0.007 | 0.7132 ± 0.010 | 2.4841 ± 0.023 |
+| SigLIP | SigLIP | 0.8967 ± 0.025 | 0.9091 ± 0.027 | 0.7435 ± 0.041 | 2.5493 ± 0.092 |
+| **MedSigLIP** | **MedSigLIP** | **0.9431 ± 0.009** | **0.9459 ± 0.006** | **0.8095 ± 0.012** | **2.6985 ± 0.026** |
+
 **Prompt length (Seed 42, 5 folds, mean ± std):**
 
 | Tokens | PLCC | SROCC | KROCC | Overall |
@@ -263,19 +262,16 @@ mean is the primary estimate.
 | 55–65 | 0.9366 ± 0.011 | 0.9423 ± 0.006 | 0.8017 ± 0.011 | 2.6806 ± 0.026 |
 | > 100 | N/A (exceeds the 64-token limit) | | | |
 
-The three valid lengths span only 0.0179 Overall, so they are not separable at
-this precision.
-
-**arXiv v1** (detailed-rubric prompt, single best fold selected by validation
-MAE): PLCC 0.9575, SROCC 0.9561, KROCC 0.8301, Overall 2.7436.
+The three valid lengths span only 0.0179 Overall and are not separable at this
+precision; the cross-seed standard deviation is ≈ 0.025 Overall.
 
 ## Pre-trained Weights
 
-- **`len2` 5-fold checkpoints:** coming soon.
-- **arXiv v1 checkpoint:**
+- **5-fold checkpoints (default prompt):** will be released upon publication.
+- **Preprint checkpoint** ([arXiv:2511.12256](https://arxiv.org/abs/2511.12256)):
   [Google Drive](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing).
   It was trained with the detailed-rubric prompt, so set
-  `"text_prompt": PAPER_V1_PROMPT` in `config.py` before using it:
+  `"text_prompt": RUBRIC_PROMPT` in `config.py` before evaluating it:
   ```bash
   python test.py --ckpt best_model.pth
   ```
@@ -288,7 +284,8 @@ details.
 
 ## Citation
 
-If you use this code in your research, please consider citing:
+The journal version is under review. Until it is published, please cite the
+preprint:
 
 ```bibtex
 @article{demiroglu2025prompt,

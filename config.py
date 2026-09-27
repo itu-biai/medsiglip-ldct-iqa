@@ -3,16 +3,16 @@ from typing import Any, Dict
 # =========================================
 # Prompts
 # =========================================
-# Default prompt (~25 BPE tokens). Best mean Overall in the prompt-length study
-# (25-35 tokens). MedSigLIP's text encoder has a hard 64-token position limit.
-LEN2_PROMPT = (
+# Default prompt (~25 BPE tokens; the 25-35 token range had the best mean Overall
+# in the prompt-length study). MedSigLIP's text encoder has a hard 64-token limit.
+DEFAULT_PROMPT = (
     "Assess LDCT diagnostic image quality using noise, artifacts, contrast, "
     "sharpness, and anatomical visibility; assign MOS from 0 to 4."
 )
 
-# Detailed-rubric prompt used in arXiv v1 (2511.12256v1). Use it together with
-# select_metric="mae" to reproduce the arXiv v1 setup.
-PAPER_V1_PROMPT = (
+# Detailed-rubric prompt (the "Detailed rubric" variant in the prompt study; also
+# the prompt of the arXiv preprint and its released checkpoint).
+RUBRIC_PROMPT = (
     "Rate this low-dose CT (MOS 0-4): 0 Nondiagnostic—desired features not shown; "
     "1 Poor—diagnostic interpretation impossible; 2 Fair—limited interpretation; "
     "3 Good—diagnostic; 4 Excellent—anatomy highly visible. Return only one number 0-4."
@@ -28,7 +28,7 @@ CONFIG: Dict[str, Any] = {
     "test_json_path": "./data/test/test.json",
     "test_data_dir": "./data/test/images",
     "checkpoint_dir": "./checkpoints",
-    "exp_name": "len2",  # checkpoints are saved as {exp_name}_fold{k}.pth
+    "exp_name": "medsiglip_iqa",  # checkpoints are saved as {exp_name}_fold{k}.pth
     # training
     "learning_rate": 1e-5,
     "batch_size": 4,
@@ -38,7 +38,7 @@ CONFIG: Dict[str, Any] = {
     "seed": 42,
     "num_folds": 5,
     "early_stop_patience": None,  # None -> disabled (all epochs run)
-    "select_metric": "val_loss",  # best-fold selection: "val_loss" or "mae" (arXiv v1)
+    "select_metric": "val_loss",  # best-fold selection: "val_loss" or "mae"
     # image
     "image_size": 448,
     # lr scheduler
@@ -54,7 +54,7 @@ CONFIG: Dict[str, Any] = {
     "use_text_prompt": True,  # Enable text prompt conditioning via FiLM
     "text_freeze": True,  # freeze text tower
     "film_strength": 1.0,  # 0 -> off
-    "text_prompt": LEN2_PROMPT,
+    "text_prompt": DEFAULT_PROMPT,
     "sigmoid_tau": 2.0,  # Temperature for sigmoid scaling (controls output range sharpness)
     "bound_output_0_4": True,  # Constrain output to [0, 4] range
     # loss (pure pairwise ranking by default)

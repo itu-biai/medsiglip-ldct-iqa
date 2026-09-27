@@ -272,7 +272,7 @@ def main():
         f"\nAverage MAE: {mean['mae']:.4f} | RMSE: {mean['rmse']:.4f} | Pearson: {mean['corr']:.4f}"
     )
 
-    # Best fold (val_loss by default; arXiv v1 used validation MAE)
+    # Best fold by cfg["select_metric"] (validation loss by default)
     metric = cfg["select_metric"]
     best_fold = min(fold_summ, key=lambda m: m[metric])["fold"]
     print(f"Best fold: {best_fold} (lowest {metric})")
