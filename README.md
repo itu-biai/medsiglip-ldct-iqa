@@ -163,26 +163,9 @@ python predict.py --ckpt checkpoints/medsiglip_iqa_fold3.pth scan1.tif scan2.tif
 
 ## Configuration
 
-All defaults live in `config.py`; the most important ones:
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `model_name` | `google/medsiglip-448` | Backbone |
-| `image_size` | `448` | Input resolution |
-| `text_prompt` | `DEFAULT_PROMPT` | Prompt injected via FiLM |
-| `film_strength` | `1.0` | FiLM strength *s* (0 = off) |
-| `text_freeze` / `freeze_backbone` | `True` / `False` | Text encoder frozen; vision encoder fine-tuned end-to-end |
-| `sigmoid_tau` | `2.0` | Output sigmoid temperature τ |
-| `bound_output_0_4` | `True` | Map output to [0, 4] |
-| `learning_rate` / `weight_decay` | `1e-5` / `1e-4` | AdamW |
-| `batch_size` × `grad_accum_steps` | `4` × `2` | Effective batch size 8 |
-| `num_epochs` | `22` | Epochs per fold |
-| `T_max` / `eta_min` | `100` / `1e-7` | Cosine annealing |
-| `use_amp` | `True` | Mixed precision |
-| `num_folds` / `seed` | `5` / `42` | Cross-validation (the paper also reports seeds 123 and 456) |
-| `rank_weight` / `mse_weight` / `rank_tau` | `1.0` / `0.0` / `0.5` | Pure pairwise ranking loss |
-| `select_metric` | `val_loss` | Best-fold selection (`val_loss` or `mae`) |
-| `early_stop_patience` | `None` | Early stopping (disabled) |
+All defaults (paths, hyperparameters, prompt, FiLM strength, loss weights) are
+in `config.py`; the most common ones can be overridden from the command line
+(`python train.py --help`).
 
 ### Prompts
 
@@ -229,42 +212,6 @@ LDCTIQA2023 test set (300 images), default prompt.
 an optimistic upper bound rather than a head-to-head comparison. The multi-seed
 mean is the primary estimate.
 
-**Per-fold results (Seed 42):**
-
-| Fold | PLCC | SROCC | KROCC | Overall |
-| ---- | ---- | ----- | ----- | ------- |
-| 1 | 0.9404 | 0.9463 | 0.8124 | 2.6991 |
-| 2 | 0.9351 | 0.9426 | 0.8023 | 2.6801 |
-| 3 | **0.9578** | **0.9565** | **0.8310** | **2.7453** |
-| 4 | 0.9477 | 0.9451 | 0.8069 | 2.6996 |
-| 5 | 0.9346 | 0.9387 | 0.7950 | 2.6682 |
-| Mean ± std | 0.9431 ± 0.009 | 0.9459 ± 0.006 | 0.8095 ± 0.012 | 2.6985 ± 0.026 |
-
-**Backbone comparison (Seed 42, 5 folds, mean ± std; same head and training
-protocol):**
-
-| Vision | Text | PLCC | SROCC | KROCC | Overall |
-| ------ | ---- | ---- | ----- | ----- | ------- |
-| EfficientNet-B0 | — | 0.9173 ± 0.007 | 0.9226 ± 0.009 | 0.7630 ± 0.015 | 2.6030 ± 0.030 |
-| EfficientNet-B0 | PubMedBERT | 0.9156 ± 0.005 | 0.9190 ± 0.006 | 0.7573 ± 0.010 | 2.5918 ± 0.021 |
-| ResNet-18 | — | 0.9005 ± 0.002 | 0.8998 ± 0.003 | 0.7277 ± 0.004 | 2.5280 ± 0.009 |
-| ResNet-18 | PubMedBERT | 0.8949 ± 0.006 | 0.8945 ± 0.006 | 0.7184 ± 0.009 | 2.5077 ± 0.022 |
-| BiomedCLIP | BiomedCLIP | 0.8814 ± 0.007 | 0.8894 ± 0.007 | 0.7132 ± 0.010 | 2.4841 ± 0.023 |
-| SigLIP | SigLIP | 0.8967 ± 0.025 | 0.9091 ± 0.027 | 0.7435 ± 0.041 | 2.5493 ± 0.092 |
-| **MedSigLIP** | **MedSigLIP** | **0.9431 ± 0.009** | **0.9459 ± 0.006** | **0.8095 ± 0.012** | **2.6985 ± 0.026** |
-
-**Prompt length (Seed 42, 5 folds, mean ± std):**
-
-| Tokens | PLCC | SROCC | KROCC | Overall |
-| ------ | ---- | ----- | ----- | ------- |
-| 5–15 | 0.9417 ± 0.006 | 0.9447 ± 0.003 | 0.8054 ± 0.006 | 2.6918 ± 0.013 |
-| **25–35 (default)** | **0.9431 ± 0.009** | **0.9459 ± 0.006** | **0.8095 ± 0.012** | **2.6985 ± 0.026** |
-| 55–65 | 0.9366 ± 0.011 | 0.9423 ± 0.006 | 0.8017 ± 0.011 | 2.6806 ± 0.026 |
-| > 100 | N/A (exceeds the 64-token limit) | | | |
-
-The three valid lengths span only 0.0179 Overall and are not separable at this
-precision; the cross-seed standard deviation is ≈ 0.025 Overall.
-
 ## Pre-trained Weights
 
 - **5-fold checkpoints (default prompt):** will be released upon publication.
@@ -281,20 +228,6 @@ precision; the cross-seed standard deviation is ≈ 0.025 Overall.
 This project is licensed under the Creative Commons Attribution-NonCommercial
 4.0 International License (CC BY-NC 4.0) - see the [LICENSE](LICENSE) file for
 details.
-
-## Citation
-
-The journal version is under review. Until it is published, please cite the
-preprint:
-
-```bibtex
-@article{demiroglu2025prompt,
-  title={Prompt-Conditioned FiLM and Multi-Scale Fusion on MedSigLIP for Low-Dose CT Quality Assessment},
-  author={Demiroglu, Tolga and Unal, Mehmet Ozan and Ertas, Metin and Yildirim, Isa},
-  journal={arXiv preprint arXiv:2511.12256},
-  year={2025}
-}
-```
 
 ## Acknowledgements
 
