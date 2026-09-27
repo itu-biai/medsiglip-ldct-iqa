@@ -214,14 +214,7 @@ mean is the primary estimate.
 
 ## Pre-trained Weights
 
-- **5-fold checkpoints (default prompt):** will be released upon publication.
-- **Preprint checkpoint** ([arXiv:2511.12256](https://arxiv.org/abs/2511.12256)):
-  [Google Drive](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing).
-  It was trained with the detailed-rubric prompt, so set
-  `"text_prompt": RUBRIC_PROMPT` in `config.py` before evaluating it:
-  ```bash
-  python test.py --ckpt best_model.pth
-  ```
+The 5-fold checkpoints (default prompt) will be released upon publication.
 
 ## License
 

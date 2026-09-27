@@ -10,8 +10,7 @@ DEFAULT_PROMPT = (
     "sharpness, and anatomical visibility; assign MOS from 0 to 4."
 )
 
-# Detailed-rubric prompt (the "Detailed rubric" variant in the prompt study; also
-# the prompt of the arXiv preprint and its released checkpoint).
+# Detailed-rubric prompt (the "Detailed rubric" variant in the prompt study).
 RUBRIC_PROMPT = (
     "Rate this low-dose CT (MOS 0-4): 0 Nondiagnostic—desired features not shown; "
     "1 Poor—diagnostic interpretation impossible; 2 Fair—limited interpretation; "
