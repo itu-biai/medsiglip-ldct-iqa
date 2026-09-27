@@ -2,181 +2,61 @@ import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+import argparse
+import gc
 import json
 import random
-import warnings
-import gc
 import shutil
-from typing import List, Tuple
+import warnings
 
 import numpy as np
-import pandas as pd
-import imageio.v3 as iio
-from PIL import Image
 from scipy.stats import pearsonr
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from tqdm import tqdm
 
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
-
-from transformers import AutoProcessor, SiglipProcessor
+from torch.utils.data import DataLoader
 
 from config import CONFIG
-from model import PromptedMultiScaleMedSigLIPIQA, RankNetMSELoss
+from data import IQADataset, build_processor, build_transforms, load_train_list, set_seed
+from model import RankNetMSELoss, build_model
 
 warnings.filterwarnings("ignore")
 
-# =========================================
-# AUGMENTATION
-# =========================================
-train_transform = T.Compose(
-    [
-        T.Resize((CONFIG["image_size"], CONFIG["image_size"])),
-        T.RandomHorizontalFlip(p=0.5),
-        T.RandomRotation(degrees=10, fill=0),
-        T.ColorJitter(brightness=0.1, contrast=0.1),
-    ]
-)
-
-val_test_transform = T.Compose(
-    [
-        T.Resize((CONFIG["image_size"], CONFIG["image_size"])),
-    ]
-)
-
 
 # =========================================
-# Helpers
+# CLI
 # =========================================
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def parse_args():
+    p = argparse.ArgumentParser(description="5-fold CV training of the MedSigLIP IQA model.")
+    p.add_argument("--json", dest="json_path", help="training annotations (filename -> MOS)")
+    p.add_argument("--data-dir", help="training image directory")
+    p.add_argument("--checkpoint-dir", help="where checkpoints and summaries are written")
+    p.add_argument("--exp-name", help="checkpoint prefix ({exp_name}_fold{k}.pth)")
+    p.add_argument("--prompt", dest="text_prompt", help="text prompt for FiLM conditioning")
+    p.add_argument("--film-strength", type=float, help="FiLM strength (0 disables FiLM)")
+    p.add_argument("--model-name", help="Hugging Face backbone id")
+    p.add_argument("--epochs", dest="num_epochs", type=int)
+    p.add_argument("--batch-size", type=int)
+    p.add_argument("--num-workers", type=int)
+    p.add_argument("--seed", type=int)
+    p.add_argument("--folds", type=int, nargs="+", help="run only these folds (1-based), e.g. --folds 1 3")
+    p.add_argument("--freeze-backbone", action="store_true", default=None, help="freeze the vision encoder")
+    return p.parse_args()
 
 
-def safe_float(x):
-    try:
-        return float(x)
-    except:
-        return np.nan
-
-
-def load_master_list(json_path: str, data_dir: str) -> List[Tuple[str, float]]:
-    with open(json_path, "r") as f:
-        data = json.load(f)
-    df = pd.DataFrame([{"Filename": k, "MOS": safe_float(v)} for k, v in data.items()])
-    df = df.dropna(subset=["MOS"])
-    master = []
-    missing = 0
-    for _, row in df.iterrows():
-        p = os.path.join(data_dir, row["Filename"])
-        if os.path.exists(p):
-            master.append((p, row["MOS"]))
-        else:
-            missing += 1
-    print(f"Total images: {len(master)} | Missing: {missing}")
-    return master
-
-
-def build_processor(model_name: str):
-    try:
-        proc = AutoProcessor.from_pretrained(model_name)
-        print(f"✅ Processor loaded: {model_name}")
-        return proc
-    except Exception as e:
-        print(
-            f"❌ Processor could not be loaded ({e}) — Falling back to SigLIP processor."
-        )
-        return SiglipProcessor.from_pretrained("google/siglip-base-patch16-224")
-
-
-# =========================================
-# Dataset
-# =========================================
-class MedSigLIPIQADataset(Dataset):
-    def __init__(self, data_list, processor, image_size=448, transform=None):
-        self.data_list = data_list
-        self.processor = processor
-        self.image_size = image_size
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.data_list)
-
-    def __getitem__(self, idx):
-        image_path, score = self.data_list[idx]
-        try:
-            img = iio.imread(image_path)
-        except Exception as e:
-            print(f"Read error {image_path}: {e}")
-            img = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-
-        # channel & range
-        if img.ndim == 3 and img.shape[-1] == 1:
-            img = img.squeeze(-1)
-        if img.ndim == 2:
-            img = np.stack([img, img, img], axis=-1)
-        if img.ndim == 3 and img.shape[-1] > 3:
-            img = img[..., :3]
-        # Normalize float [0,1] to uint8 [0,255] if necessary
-        img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
-
-        pil = Image.fromarray(img)
-
-        # --- AUGMENTATION / RESIZE ---
-        if self.transform is not None:
-            pil = self.transform(pil)
-        else:
-            pil = pil.resize(
-                (self.image_size, self.image_size), Image.Resampling.LANCZOS
-            )
-
-        # Tensor conversion and normalization with AutoProcessor
-        try:
-            inputs = self.processor(
-                images=pil, return_tensors="pt", do_resize=False, do_center_crop=False
-            )
-        except TypeError:
-            inputs = self.processor(images=pil, return_tensors="pt")
-        except Exception as e:
-            print(f"Processor error: {e} — manual normalization.")
-            tr = T.Compose(
-                [
-                    T.ToTensor(),
-                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ]
-            )
-            inputs = {"pixel_values": tr(pil).unsqueeze(0)}
-
-        for k in list(inputs.keys()):
-            v = inputs[k]
-            if hasattr(v, "dim") and v.dim() > 1:
-                inputs[k] = v.squeeze(0)
-
-        return inputs, torch.tensor(float(score), dtype=torch.float32)
+def apply_overrides(cfg, args):
+    cfg = dict(cfg)
+    for k, v in vars(args).items():
+        if k != "folds" and v is not None:
+            cfg[k] = v
+    return cfg
 
 
 # =========================================
 # Training / Evaluation
 # =========================================
-def create_model(processor, text_prompt: str):
-    text_inputs = None
-    if CONFIG.get("use_text_prompt", False) and text_prompt:
-        try:
-            ti = processor(text=text_prompt, return_tensors="pt")
-            text_inputs = {k: v for k, v in ti.items() if isinstance(v, torch.Tensor)}
-        except Exception:
-            text_inputs = None
-    return PromptedMultiScaleMedSigLIPIQA(
-        CONFIG["medsiglip_model"], text_inputs=text_inputs
-    )
-
-
 @torch.no_grad()
 def evaluate(model, loader, loss_fn, device):
     model.eval()
@@ -209,7 +89,7 @@ def train_one_epoch(
         try:
             x = inputs["pixel_values"].to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 out = model({"pixel_values": x})
                 loss = loss_fn(out, y) / grad_accum
             scaler.scale(loss).backward()
@@ -229,164 +109,99 @@ def train_one_epoch(
             print("OOM — batch skipped")
             opt.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
-        except Exception as e:
-            print(f"Batch error: {e}")
-            opt.zero_grad(set_to_none=True)
     return tot / max(n, 1)
-
-
-# =========================================
-# Inference helpers
-# =========================================
-def preprocess_for_infer(image_path: str, processor, image_size=448):
-    img = iio.imread(image_path)
-    if img.ndim == 3 and img.shape[-1] == 1:
-        img = img.squeeze(-1)
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    if img.ndim == 3 and img.shape[-1] > 3:
-        img = img[..., :3]
-    img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
-    pil = Image.fromarray(img).resize(
-        (image_size, image_size), Image.Resampling.LANCZOS
-    )
-    try:
-        inputs = processor(
-            images=pil, return_tensors="pt", do_resize=False, do_center_crop=False
-        )
-    except TypeError:
-        inputs = processor(images=pil, return_tensors="pt")
-    return {"pixel_values": inputs["pixel_values"]}
-
-
-@torch.no_grad()
-def predict(
-    image_paths: List[str],
-    ckpt_path: str,
-    model_name="google/medsiglip-448",
-    prompt: str = None,
-    device=None,
-):
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    processor = build_processor(model_name)
-
-    # model with prompt
-    text_inputs = None
-    if prompt:
-        try:
-            ti = processor(text=prompt, return_tensors="pt")
-            text_inputs = {k: v for k, v in ti.items() if isinstance(v, torch.Tensor)}
-        except:
-            pass
-    model = PromptedMultiScaleMedSigLIPIQA(model_name, text_inputs=text_inputs).to(
-        device
-    )
-
-    sd = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(sd, strict=False)
-    model.eval()
-
-    out = {}
-    for p in image_paths:
-        inp = preprocess_for_infer(p, processor, image_size=CONFIG["image_size"])
-        inp["pixel_values"] = inp["pixel_values"].to(device)
-        y = model(inp).item()
-        out[p] = y
-    return out
-
-
-def get_film_strength(m):
-    target = m.module if hasattr(m, "module") else m
-    return getattr(target, "film_strength", "-")
 
 
 # =========================================
 # MAIN: Training
 # =========================================
 def main():
-    set_seed(CONFIG["seed"])
+    args = parse_args()
+    cfg = apply_overrides(CONFIG, args)
+    exp = cfg["exp_name"]
+    ckpt_dir = cfg["checkpoint_dir"]
+    os.makedirs(ckpt_dir, exist_ok=True)
 
-    json_path = CONFIG["json_path"]
-    data_dir = CONFIG["data_dir"]
+    set_seed(cfg["seed"])
 
-    master = load_master_list(json_path, data_dir)
-    random.shuffle(master)
-    train_pool = master
+    train_pool = load_train_list(cfg["json_path"], cfg["data_dir"])
+    random.shuffle(train_pool)
     print(f"Training pool: {len(train_pool)}")
 
-    processor = build_processor(CONFIG["medsiglip_model"])
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device} | Model: {CONFIG['medsiglip_model']}")
-
-    kf = KFold(n_splits=5, shuffle=True, random_state=CONFIG["seed"])
-    idxs = np.arange(len(train_pool))
-
-    best_overall_mae = float("inf")
-    best_fold = None
-    fold_summ = []
+    processor = build_processor(cfg["model_name"])
+    train_transform, val_transform = build_transforms(cfg["image_size"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pin = device.type == "cuda"
+    use_amp = cfg["use_amp"] and device.type == "cuda"
+    print(f"Device: {device} | Model: {cfg['model_name']} | Experiment: {exp}")
+    print(f"Prompt: {cfg['text_prompt'] if cfg['use_text_prompt'] else '<none>'}")
 
-    print("🚀 Starting 5-Fold Cross Validation")
+    # Record which prompt/hyperparameters produced these checkpoints;
+    # test.py and predict.py read it back to rebuild the same model.
+    with open(os.path.join(ckpt_dir, f"{exp}_config.json"), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+    kf = KFold(n_splits=cfg["num_folds"], shuffle=True, random_state=cfg["seed"])
+    idxs = np.arange(len(train_pool))
+    patience_limit = cfg.get("early_stop_patience")
+    fold_summ = []
+
+    print(f"Starting {cfg['num_folds']}-Fold Cross Validation")
     for fold, (tr_idx, va_idx) in enumerate(kf.split(idxs), start=1):
+        if args.folds and fold not in args.folds:
+            continue
         print(f"\n========== Fold {fold} ==========")
         tr_split = [train_pool[i] for i in tr_idx]
         va_split = [train_pool[i] for i in va_idx]
 
-        tr_ds = MedSigLIPIQADataset(
-            tr_split, processor, CONFIG["image_size"], transform=train_transform
-        )
-        va_ds = MedSigLIPIQADataset(
-            va_split, processor, CONFIG["image_size"], transform=val_test_transform
-        )
+        tr_ds = IQADataset(tr_split, processor, cfg["image_size"], transform=train_transform)
+        va_ds = IQADataset(va_split, processor, cfg["image_size"], transform=val_transform)
 
         tr_dl = DataLoader(
             tr_ds,
-            batch_size=CONFIG["batch_size"],
+            batch_size=cfg["batch_size"],
             shuffle=True,
-            num_workers=CONFIG["num_workers"],
+            num_workers=cfg["num_workers"],
             pin_memory=pin,
             persistent_workers=False,
-            drop_last=False,
+            # BatchNorm cannot train on a single-sample batch
+            drop_last=len(tr_ds) % cfg["batch_size"] == 1,
         )
         va_dl = DataLoader(
             va_ds,
-            batch_size=CONFIG["batch_size"],
+            batch_size=cfg["batch_size"],
             shuffle=False,
-            num_workers=CONFIG["num_workers"],
+            num_workers=cfg["num_workers"],
             pin_memory=pin,
             persistent_workers=False,
             drop_last=False,
         )
 
-        model = create_model(processor, CONFIG.get("text_prompt", "")).to(device)
+        model = build_model(cfg, processor).to(device)
 
-        loss_fn = RankNetMSELoss(mse_weight=0.0, rank_weight=1.0, temperature=0.5)
-
+        loss_fn = RankNetMSELoss(
+            mse_weight=cfg["mse_weight"],
+            rank_weight=cfg["rank_weight"],
+            temperature=cfg["rank_tau"],
+        )
         opt = torch.optim.AdamW(
             model.parameters(),
-            lr=CONFIG["learning_rate"],
-            weight_decay=CONFIG["weight_decay"],
+            lr=cfg["learning_rate"],
+            weight_decay=cfg["weight_decay"],
             eps=1e-8,
         )
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=CONFIG["T_max"], eta_min=CONFIG["eta_min"]
+            opt, T_max=cfg["T_max"], eta_min=cfg["eta_min"]
         )
-        scaler = torch.cuda.amp.GradScaler(
-            enabled=(CONFIG["use_amp"] and device.type == "cuda")
-        )
+        scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
 
-        best_val = float("inf")
-        best_mae = float("inf")
-        best_rmse = float("inf")
-        best_corr = 0.0
+        ckpt = os.path.join(ckpt_dir, f"{exp}_fold{fold}.pth")
+        best = {"val_loss": float("inf"), "mae": float("inf"), "rmse": float("inf"), "corr": 0.0, "epoch": 0}
+        patience = 0
 
-        for epoch in range(1, CONFIG["num_epochs"] + 1):
-            print(
-                f"\nEpoch {epoch}/{CONFIG['num_epochs']} (tau={loss_fn.tau:.3f}, film={get_film_strength(model)})"
-            )
+        for epoch in range(1, cfg["num_epochs"] + 1):
+            print(f"\nEpoch {epoch}/{cfg['num_epochs']}")
 
             tr_loss = train_one_epoch(
                 model,
@@ -395,42 +210,38 @@ def main():
                 opt,
                 device,
                 scaler,
-                grad_accum=CONFIG["grad_accum_steps"],
-                use_amp=(CONFIG["use_amp"] and device.type == "cuda"),
+                grad_accum=cfg["grad_accum_steps"],
+                use_amp=use_amp,
             )
             va_loss, va_mae, va_rmse, va_corr = evaluate(model, va_dl, loss_fn, device)
             print(
                 f"Train {tr_loss:.4f} | Val {va_loss:.4f} | MAE {va_mae:.4f} | RMSE {va_rmse:.4f} | Corr {va_corr:.4f}"
             )
 
-            if va_loss < best_val:
-                best_val = va_loss
-                best_mae = va_mae
-                best_rmse = va_rmse
-                best_corr = va_corr
-                ckpt = f"{CONFIG['checkpoint_path']}_fold{fold}.pth"
+            # Checkpoint = epoch with the lowest validation loss
+            if va_loss < best["val_loss"]:
+                best = {
+                    "val_loss": float(va_loss),
+                    "mae": float(va_mae),
+                    "rmse": float(va_rmse),
+                    "corr": float(va_corr),
+                    "epoch": epoch,
+                }
                 torch.save(model.state_dict(), ckpt)
-                print(f"✅ Best fold model saved: {ckpt}")
+                print(f"Best fold model saved: {ckpt}")
+                patience = 0
+            else:
+                patience += 1
 
-            try:
-                sch.step()
-            except Exception as e:
-                print(f"Scheduler error: {e}")
+            sch.step()
 
-        fold_summ.append(
-            {
-                "fold": fold,
-                "val_loss": best_val,
-                "mae": best_mae,
-                "rmse": best_rmse,
-                "corr": best_corr,
-            }
-        )
-        if best_mae < best_overall_mae:
-            best_overall_mae = best_mae
-            best_fold = fold
+            if patience_limit is not None and patience >= patience_limit:
+                print(f"Early stopping (epoch {epoch})")
+                break
 
-            # --- END OF FOLD CLEANUP ---
+        fold_summ.append({"fold": fold, **best})
+
+        # --- END OF FOLD CLEANUP ---
         del tr_dl, va_dl, tr_ds, va_ds
         del loss_fn, opt, sch, scaler, model
 
@@ -448,26 +259,40 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
-    print("\n=== 5-Fold Summary ===")
+    if not fold_summ:
+        raise SystemExit("No folds were run. Check --folds.")
+
+    print(f"\n=== {len(fold_summ)}-Fold Summary (best epoch per fold) ===")
     for m in fold_summ:
         print(
-            f"Fold {m['fold']} | Val {m['val_loss']:.4f} | MAE {m['mae']:.4f} | RMSE {m['rmse']:.4f} | Corr {m['corr']:.4f}"
+            f"Fold {m['fold']} | Epoch {m['epoch']} | Val {m['val_loss']:.4f} | MAE {m['mae']:.4f} | RMSE {m['rmse']:.4f} | Corr {m['corr']:.4f}"
         )
-    avg_mae = np.mean([m["mae"] for m in fold_summ])
-    avg_rmse = np.mean([m["rmse"] for m in fold_summ])
-    avg_corr = np.mean([m["corr"] for m in fold_summ])
+    mean = {k: float(np.mean([m[k] for m in fold_summ])) for k in ("val_loss", "mae", "rmse", "corr")}
     print(
-        f"\nAverage MAE: {avg_mae:.4f} | RMSE: {avg_rmse:.4f} | Pearson: {avg_corr:.4f}"
+        f"\nAverage MAE: {mean['mae']:.4f} | RMSE: {mean['rmse']:.4f} | Pearson: {mean['corr']:.4f}"
     )
-    print(f"Best fold: {best_fold} (MAE {best_overall_mae:.4f})")
 
-    # save best model
-    best_ckpt = f"{CONFIG['checkpoint_path']}_fold{best_fold}.pth"
-    final_ckpt = f"{CONFIG['checkpoint_path']}_best.pth"
-    shutil.copy(best_ckpt, final_ckpt)
-    print(f"🏆 Best model saved: {final_ckpt}")
+    # Best fold (val_loss by default; arXiv v1 used validation MAE)
+    metric = cfg["select_metric"]
+    best_fold = min(fold_summ, key=lambda m: m[metric])["fold"]
+    print(f"Best fold: {best_fold} (lowest {metric})")
 
-    print("🏥 Training completed.")
+    best_ckpt = os.path.join(ckpt_dir, f"{exp}_fold{best_fold}.pth")
+    final_ckpt = os.path.join(ckpt_dir, f"{exp}_best.pth")
+    shutil.copy2(best_ckpt, final_ckpt)
+    print(f"Best model saved: {final_ckpt}")
+
+    summary = {
+        "exp_name": exp,
+        "select_metric": metric,
+        "best_fold": best_fold,
+        "folds": fold_summ,
+        "mean": mean,
+    }
+    with open(os.path.join(ckpt_dir, f"{exp}_cv_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print("Training completed.")
 
 
 if __name__ == "__main__":

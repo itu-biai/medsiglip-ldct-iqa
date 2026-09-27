@@ -2,294 +2,167 @@ import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+import argparse
+import csv
+import glob
 import json
 import warnings
 
 import numpy as np
-import pandas as pd
-import imageio.v3 as iio
-import pydicom
-from PIL import Image
 from scipy.stats import pearsonr, spearmanr, kendalltau
 from tqdm import tqdm
 
 import torch
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
-
-from transformers import AutoProcessor, SiglipProcessor
+from torch.utils.data import DataLoader
 
 from config import CONFIG
-from model import PromptedMultiScaleMedSigLIPIQA
+from data import IQADataset, build_processor, build_transforms, load_test_list
+from model import CKPT_NAME_RE, build_model, load_checkpoint, resolve_inference_config
 
 warnings.filterwarnings("ignore")
 
-# -------------------- DEVICE --------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Device used: {device}")
 
-# -------------------- CHECKPOINT PATH --------------------
-CHECKPOINT_PATH = "./checkpoints/medsiglip_iqa_model_best.pth"
-
-
-# -------------------- HELPER FUNCTIONS --------------------
-def build_processor(name):
-    try:
-        proc = AutoProcessor.from_pretrained(name)
-        print(f"✅ Processor loaded: {name}")
-        return proc
-    except Exception as e:
-        print(f"❌ AutoProcessor could not be loaded ({e}).")
-        print("↪️ Falling back to SiglipProcessor: google/siglip-base-patch16-224")
-        return SiglipProcessor.from_pretrained("google/siglip-base-patch16-224")
-
-
-def safe_float(x):
-    try:
-        return float(x)
-    except:
-        return np.nan
+# -------------------- CLI --------------------
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Evaluate one checkpoint, or every {exp}_fold*.pth in a directory (mean ± std)."
+    )
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--ckpt", help="a single checkpoint (.pth)")
+    src.add_argument("--ckpt-dir", help="directory with {exp_name}_fold{k}.pth (default: config checkpoint_dir)")
+    p.add_argument("--exp-name", help="checkpoint prefix (default: config exp_name, or parsed from --ckpt)")
+    p.add_argument("--prompt", help="override the text prompt (default: from {exp_name}_config.json, else config.py)")
+    p.add_argument("--film-strength", type=float, help="override FiLM strength")
+    p.add_argument("--test-json", help="test annotations (filename -> MOS)")
+    p.add_argument("--test-dir", help="test image directory")
+    p.add_argument("--out", help="results JSON (default in --ckpt-dir mode: <dir>/test_results.json)")
+    p.add_argument("--save-preds", help="write per-image predictions to this CSV")
+    p.add_argument("--batch-size", type=int, default=CONFIG["batch_size"])
+    p.add_argument("--num-workers", type=int, default=CONFIG["num_workers"])
+    return p.parse_args()
 
 
-def index_files(root, exts={".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm"}):
-    idx = {}
-    for dp, _, fns in os.walk(root):
-        for fn in fns:
-            full = os.path.join(dp, fn)
-            base = os.path.basename(fn)
-            lowb = base.lower()
-            stem = os.path.splitext(lowb)[0]
-            ext = os.path.splitext(lowb)[1]
-            if exts and ext not in exts:
-                continue
-            idx[lowb] = full
-            idx[stem] = full
-    return idx
+def find_fold_checkpoints(ckpt_dir, exp_name):
+    ckpts = []
+    for path in glob.glob(os.path.join(ckpt_dir, f"{glob.escape(exp_name)}_fold*.pth")):
+        m = CKPT_NAME_RE.match(os.path.basename(path))
+        if m and m.group("exp") == exp_name and m.group("fold"):
+            ckpts.append((int(m.group("fold")), path))
+    return sorted(ckpts)
 
 
-def load_test_list(json_path, data_dir):
-    # Load ground truth data
-    with open(json_path, "r") as f:
-        data = json.load(f)
-
-    # Index all files in the directory for fuzzy matching
-    file_index = index_files(data_dir)
-    rows, missing = [], []
-    for k, v in data.items():
-        if v is None:
-            continue
-        k = str(k)
-        full = os.path.join(data_dir, k)
-
-        # Direct match
-        if os.path.exists(full):
-            rows.append((full, safe_float(v)))
-            continue
-
-        # Fuzzy match (case insensitive, extension agnostic)
-        candidates = [
-            k.lower(),
-            os.path.basename(k).lower(),
-            os.path.splitext(k.lower())[0],
-            os.path.splitext(os.path.basename(k).lower())[0],
-        ]
-        found = None
-        for c in candidates:
-            if c in file_index:
-                found = file_index[c]
-                break
-            for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".dcm"]:
-                if (c + ext) in file_index:
-                    found = file_index[c + ext]
-                    break
-            if found:
-                break
-
-        if found:
-            rows.append((found, safe_float(v)))
-        else:
-            missing.append(k)
-
-    df = pd.DataFrame(rows, columns=["path", "mos"]).dropna(subset=["mos"])
-    print(f"Test images: {len(df)} | Missing: {len(missing)}")
-    if missing[:5]:
-        print("Sample missing:", missing[:5])
-    return df
+# -------------------- METRICS --------------------
+def compute_metrics(preds, tgts):
+    preds = np.asarray(preds, dtype=np.float64)
+    tgts = np.asarray(tgts, dtype=np.float64)
+    res = {
+        "plcc": float(abs(pearsonr(preds, tgts)[0])),
+        "srocc": float(abs(spearmanr(preds, tgts)[0])),
+        "krocc": float(abs(kendalltau(preds, tgts)[0])),
+    }
+    res["overall"] = res["plcc"] + res["srocc"] + res["krocc"]
+    return res
 
 
-def read_image(path):
-    ext = os.path.splitext(path)[1].lower()
-    # Handle DICOM files
-    if ext == ".dcm":
-        try:
-            ds = pydicom.dcmread(path)
-            img = ds.pixel_array.astype(np.float32)
-            # Normalize DICOM to 0-255
-            img = img - img.min()
-            if img.max() > 0:
-                img = img / img.max()
-            img = (img * 255).astype(np.uint8)
-            if img.ndim == 2:
-                img = np.stack([img, img, img], -1)
-            return img
-        except Exception as e:
-            print(f"DICOM read error {path}: {e}")
-    # Handle standard image formats
-    return iio.imread(path)
-
-
-# -------------------- DATASET --------------------
-class IQATestDataset(Dataset):
-    def __init__(
-        self, df, processor, image_size=448, transform=None, return_path=False
-    ):
-        self.df = df.reset_index(drop=True)
-        self.processor = processor
-        self.image_size = image_size
-        self.transform = transform
-        self.return_path = return_path
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        p = self.df.loc[idx, "path"]
-        y = float(self.df.loc[idx, "mos"])
-
-        try:
-            img = read_image(p)
-        except Exception as e:
-            print(f"Read error {p}: {e}")
-            img = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-
-        # Dimension checks
-        if img.ndim == 3 and img.shape[-1] == 1:
-            img = img.squeeze(-1)
-        if img.ndim == 2:
-            img = np.stack([img, img, img], axis=-1)
-        if img.ndim == 3 and img.shape[-1] > 3:
-            img = img[..., :3]
-
-        # Dtype conversion
-        if img.dtype in [np.float32, np.float64]:
-            # Empty image check
-            if img.size == 0 or (img.max() == 0 and img.min() == 0):
-                img = np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-            elif img.max() <= 1.0 and img.min() >= 0.0:
-                img = (img * 255).astype(np.uint8)
-            else:
-                # Normalize and clip
-                img = np.clip(img, 0, 255).astype(np.uint8)
-        else:
-            # Overflow check for integer types
-            img = np.clip(img, 0, 255).astype(np.uint8)
-
-        pil = Image.fromarray(img)
-
-        # Apply transform
-        if self.transform is not None:
-            pil = self.transform(pil)
-        else:
-            pil = pil.resize(
-                (self.image_size, self.image_size), Image.Resampling.LANCZOS
-            )
-
-        # Process with processor
-        try:
-            inputs = self.processor(
-                images=pil, return_tensors="pt", do_resize=False, do_center_crop=False
-            )
-        except TypeError:
-            inputs = self.processor(images=pil, return_tensors="pt")
-        except Exception as e:
-            print(f"Processor error: {e} — manual normalization.")
-            tr = T.Compose(
-                [
-                    T.ToTensor(),
-                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ]
-            )
-            inputs = {"pixel_values": tr(pil).unsqueeze(0)}
-
-        # Remove batch dimension
-        for k in list(inputs.keys()):
-            v = inputs[k]
-            if hasattr(v, "dim") and v.dim() > 1:
-                inputs[k] = v.squeeze(0)
-
-        y = torch.tensor(y, dtype=torch.float32)
-        return (inputs, y, p) if self.return_path else (inputs, y)
-
-
-# Deterministic val/test transform
-val_test_transform = T.Compose([T.Resize((CONFIG["image_size"], CONFIG["image_size"]))])
-
-# -------------------- PROCESSOR / MODEL --------------------
-processor = build_processor(CONFIG["model_name"])
-
-text_inputs = None
-if CONFIG["use_text_prompt"]:
-    try:
-        ti = processor(text=CONFIG["text_prompt"], return_tensors="pt")
-        text_inputs = {k: v for k, v in ti.items() if isinstance(v, torch.Tensor)}
-    except Exception as e:
-        print("Text processor error:", e)
-        text_inputs = None
-
-model = PromptedMultiScaleMedSigLIPIQA(
-    CONFIG["model_name"],
-    text_inputs=text_inputs,
-    film_strength=CONFIG["film_strength"],
-    bound=CONFIG["bound_output_0_4"],
-).to(device)
-
-state = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
-model.load_state_dict(state, strict=False)
-model.eval()
-print(f"✅ Model loaded from: {CHECKPOINT_PATH}")
-
-# -------------------- TEST DATA --------------------
-df_test = load_test_list(CONFIG["test_json_path"], CONFIG["test_data_dir"])
-if len(df_test) == 0:
-    raise SystemExit("❌ Test list is empty. Check paths and test.json content.")
-
-test_ds = IQATestDataset(
-    df_test,
-    processor,
-    image_size=CONFIG["image_size"],
-    transform=val_test_transform,
-    return_path=False,
-)
-test_dl = DataLoader(
-    test_ds,
-    batch_size=CONFIG["batch_size"],
-    shuffle=False,
-    num_workers=CONFIG["num_workers"],
-    pin_memory=True,
-)
-
-# -------------------- PREDICTION + METRICS --------------------
-all_preds, all_tgts = [], []
-with torch.no_grad():
-    for inputs, y in tqdm(test_dl, desc="Test"):
+@torch.no_grad()
+def predict_loader(model, loader, device):
+    model.eval()
+    preds, tgts, paths = [], [], []
+    for inputs, y, p in tqdm(loader, desc="Test", leave=False):
         pv = inputs["pixel_values"].to(device, non_blocking=True)
-        y = y.to(device, non_blocking=True)
         yhat = model({"pixel_values": pv})
-        all_preds.extend(yhat.detach().cpu().numpy().tolist())
-        all_tgts.extend(y.detach().cpu().numpy().tolist())
+        preds.extend(yhat.detach().cpu().numpy().tolist())
+        tgts.extend(y.numpy().tolist())
+        paths.extend(p)
+    return preds, tgts, paths
 
-all_preds = np.asarray(all_preds, dtype=np.float64)
-all_tgts = np.asarray(all_tgts, dtype=np.float64)
 
-results = {
-    "plcc": abs(pearsonr(all_preds, all_tgts)[0]),
-    "srocc": abs(spearmanr(all_preds, all_tgts)[0]),
-    "krocc": abs(kendalltau(all_preds, all_tgts)[0]),
-}
-results["overall"] = results["plcc"] + results["srocc"] + results["krocc"]
+# -------------------- MAIN --------------------
+def main():
+    args = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device used: {device}")
 
-print("\n📊 TEST RESULTS")
-print(f"PLCC  : {results['plcc']:.4f}")
-print(f"SROCC : {results['srocc']:.4f}")
-print(f"KROCC : {results['krocc']:.4f}")
-print(f"TOTAL : {results['overall']:.4f}")
+    # Which checkpoints?
+    if args.ckpt:
+        m = CKPT_NAME_RE.match(os.path.basename(args.ckpt))
+        exp_name = args.exp_name or (m.group("exp") if m else None)
+        ckpt_dir = os.path.dirname(os.path.abspath(args.ckpt))
+        label = f"fold{m.group('fold')}" if m and m.group("fold") else os.path.basename(args.ckpt)
+        ckpts = [(label, args.ckpt)]
+    else:
+        exp_name = args.exp_name or CONFIG["exp_name"]
+        ckpt_dir = args.ckpt_dir or CONFIG["checkpoint_dir"]
+        ckpts = [(f"fold{k}", p) for k, p in find_fold_checkpoints(ckpt_dir, exp_name)]
+        if not ckpts:
+            raise SystemExit(f"No {exp_name}_fold*.pth found in {ckpt_dir}")
+    print(f"Checkpoints: {[os.path.basename(p) for _, p in ckpts]}")
+
+    cfg = resolve_inference_config(CONFIG, ckpt_dir, exp_name, args.prompt, args.film_strength)
+
+    # Test data
+    items = load_test_list(
+        args.test_json or cfg["test_json_path"], args.test_dir or cfg["test_data_dir"]
+    )
+    if not items:
+        raise SystemExit("Test list is empty. Check paths and test.json content.")
+
+    processor = build_processor(cfg["model_name"])
+    _, eval_transform = build_transforms(cfg["image_size"])
+    test_ds = IQADataset(
+        items, processor, image_size=cfg["image_size"], transform=eval_transform, return_path=True
+    )
+    test_dl = DataLoader(
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda",
+    )
+
+    # The backbone is built once; each checkpoint is loaded into it in turn.
+    model = build_model(cfg, processor).to(device)
+
+    results, pred_cols, paths, tgts = [], {}, None, None
+    for label, path in ckpts:
+        load_checkpoint(model, path)
+        preds, tgts, paths = predict_loader(model, test_dl, device)
+        res = {"checkpoint": os.path.basename(path), **compute_metrics(preds, tgts)}
+        results.append(res)
+        pred_cols[label] = preds
+
+    # Report
+    keys = ("plcc", "srocc", "krocc", "overall")
+    print(f"\nTEST RESULTS ({exp_name or 'checkpoint'})")
+    print(f"{'Model':<24} {'PLCC':>8} {'SROCC':>8} {'KROCC':>8} {'Overall':>10}")
+    print("-" * 62)
+    for r in results:
+        print(f"{r['checkpoint']:<24} {r['plcc']:>8.4f} {r['srocc']:>8.4f} {r['krocc']:>8.4f} {r['overall']:>10.4f}")
+
+    summary = {"prompt": cfg["text_prompt"] if cfg["use_text_prompt"] else None, "folds": results}
+    if len(results) > 1:
+        mean = {k: float(np.mean([r[k] for r in results])) for k in keys}
+        std = {k: float(np.std([r[k] for r in results])) for k in keys}
+        print("-" * 62)
+        print(f"{'Mean':<24} {mean['plcc']:>8.4f} {mean['srocc']:>8.4f} {mean['krocc']:>8.4f} {mean['overall']:>10.4f}")
+        print(f"{'Std':<24} {std['plcc']:>8.4f} {std['srocc']:>8.4f} {std['krocc']:>8.4f} {std['overall']:>10.4f}")
+        summary.update({"mean_metrics": mean, "std_metrics": std})
+
+    out = args.out or (None if args.ckpt else os.path.join(ckpt_dir, "test_results.json"))
+    if out:
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=4, ensure_ascii=False)
+        print(f"\nSaved test results to {out}")
+
+    if args.save_preds:
+        with open(args.save_preds, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["path", "mos"] + [f"pred_{c}" for c in pred_cols])
+            for i, p in enumerate(paths):
+                w.writerow([p, tgts[i]] + [pred_cols[c][i] for c in pred_cols])
+        print(f"Saved per-image predictions to {args.save_preds}")
+
+
+if __name__ == "__main__":
+    main()
