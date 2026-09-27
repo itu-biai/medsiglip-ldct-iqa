@@ -11,115 +11,76 @@ MLP, trained with pairwise ranking loss.
 
 The model predicts Mean Opinion Score (MOS) values (0-4 scale) for low-dose CT
 images, enabling automated quality assessment for medical imaging applications.
-Key innovations include:
+Key components:
 
-1. **MedSigLIP Backbone** - Medical domain-adapted vision-language model
+1. **MedSigLIP Backbone** - Medical domain-adapted vision-language model; the
+   vision encoder is fine-tuned end-to-end, the text encoder stays frozen
 2. **FiLM Prompt Conditioning** - Text-guided feature modulation for
    task-specific adaptation
 3. **Multi-Scale Feature Extraction** - Global, local, and texture-level quality
    assessment
 4. **Pairwise Ranking Loss** - RankNet-based loss for better correlation metrics
 
+## What's New (v2)
+
+- **New default prompt (`len2`, ~25 tokens)** — the 25–35 token range had the
+  highest mean Overall in the prompt-length study (see [Results](#results)).
+  The arXiv v1 detailed-rubric prompt is kept as `PAPER_V1_PROMPT` in
+  `config.py`.
+- **Multi-fold evaluation** — `test.py` evaluates every fold checkpoint and
+  reports per-fold results plus mean ± std (or a single checkpoint with
+  `--ckpt`).
+- **Command-line interface** for `train.py`, `test.py` and the new
+  `predict.py` (MOS for arbitrary images).
+- **Self-describing runs** — `train.py` writes `{exp}_config.json` (prompt and
+  hyperparameters) next to the checkpoints; `test.py`/`predict.py` read it back,
+  so a checkpoint is always evaluated with the prompt it was trained with (the
+  prompt embedding is not stored inside the `.pth`).
+- **Compatibility** with `transformers` 5.x and the `torch.amp` API.
+- **Fixes** — the fold summary now reports best-epoch metrics; loading errors,
+  unreadable images and failed batches raise instead of silently falling back.
+- The checkpoint format is unchanged (plain `state_dict`), so existing
+  checkpoints load as before.
+
 ## Directory Structure
 
 ```
 .
-├── config.py           # Configuration settings and hyperparameters
-├── model.py            # Model architecture (PromptedMultiScaleMedSigLIPIQA)
-├── train.py            # Training script with 5-fold cross-validation
-├── test.py             # Evaluation script with PLCC, SROCC, KROCC metrics
+├── config.py           # Default configuration and prompts (LEN2_PROMPT, PAPER_V1_PROMPT)
+├── data.py             # Annotation loading, image IO, dataset, transforms, processor
+├── model.py            # PromptedMultiScaleMedSigLIPIQA, RankNetMSELoss, checkpoint helpers
+├── train.py            # 5-fold cross-validation training
+├── test.py             # Test-set evaluation (PLCC, SROCC, KROCC), single or all folds
+├── predict.py          # MOS prediction for individual images
 ├── requirements.txt    # Python dependencies
-├── README.md           # This file
-├── .gitignore          # Git ignore file
+├── LICENSE             # CC BY-NC 4.0
 └── assets/
     └── architecture.png
 ```
-
-## Key Features
-
-- **MedSigLIP Integration**: Leverages Google's medical domain SigLIP model
-  (`google/medsiglip-448`)
-- **FiLM Conditioning**: Text prompts guide the model to focus on diagnostic
-  quality aspects
-- **Multi-Scale Pooling**:
-  - Global average pooling for overall quality
-  - Local average pooling (4 regions) for regional quality
-  - Texture max pooling (2 regions) for texture/detail quality
-- **Advanced Training**:
-  - Mixed precision training (AMP) for faster training
-  - Gradient accumulation for effective larger batch sizes
-  - Cosine annealing learning rate scheduler
-  - Early stopping with patience
-- **5-Fold Cross-Validation**: Robust model evaluation and selection
-- **Comprehensive Metrics**: PLCC, SROCC, KROCC correlation coefficients
 
 ## Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/itu-biai/medsiglip_ldct_iqa.git
-   cd medsiglip_ldct_iqa
+   git clone https://github.com/itu-biai/medsiglip-ldct-iqa.git
+   cd medsiglip-ldct-iqa
    ```
 
-2. Create a conda environment and install dependencies:
+2. Create an environment and install dependencies:
    ```bash
-   conda create -n medsiglip_ldct_iqa python=3.10
+   conda create -n medsiglip_ldct_iqa python=3.11
    conda activate medsiglip_ldct_iqa
    pip install -r requirements.txt
    ```
 
-## Requirements
+3. Get access to MedSigLIP. `google/medsiglip-448` is a gated model: accept the
+   Health AI Developer Foundations terms on its
+   [Hugging Face page](https://huggingface.co/google/medsiglip-448), then log in:
+   ```bash
+   hf auth login
+   ```
 
-The project dependencies are listed in `requirements.txt`:
-
-- PyTorch (≥2.0.0) and torchvision (≥0.15.0) for deep learning
-- Transformers (≥4.30.0) for MedSigLIP model
-- NumPy (≥1.24.0) for numerical computations
-- Pandas (≥2.0.0) for data handling
-- SciPy (≥1.10.0) for statistical metrics
-- scikit-learn (≥1.2.0) for cross-validation and metrics
-- imageio (≥2.31.0) and Pillow (≥9.5.0) for image processing
-- pydicom (≥2.4.0) for DICOM file support
-- tqdm (≥4.65.0) for progress bars
-
-## Configuration
-
-All configuration settings are centralized in `config.py`. Key parameters to
-adjust:
-
-### File Paths
-
-```python
-"checkpoint_path": "path/to/save/medsiglip_iqa"      # Model checkpoint save location
-"json_path": "path/to/train.json"            # Training data annotations
-"data_dir": "path/to/train/images"           # Training images directory
-"test_json_path": "path/to/test.json"        # Test data annotations
-"test_data_dir": "path/to/test/images"       # Test images directory
-```
-
-### Training Parameters
-
-```python
-"learning_rate": 1e-5      # Learning rate
-"batch_size": 4            # Batch size per GPU
-"num_epochs": 22           # Maximum training epochs
-"weight_decay": 1e-4       # AdamW weight decay
-"grad_accum_steps": 2      # Gradient accumulation steps
-"use_amp": True            # Enable mixed precision training
-"T_max": 100                # Cosine annealing T_max (usually = num_epochs)
-"eta_min": 1e-7            # Cosine annealing minimum learning rate
-```
-
-### Model Parameters
-
-```python
-"medsiglip_model": "google/medsiglip-448"  # Backbone model
-"image_size": 448                           # Input image resolution
-"use_text_prompt": True                     # Enable FiLM conditioning
-"film_strength": 1.0                        # FiLM modulation strength (0=off)
-"sigmoid_tau": 2.0                          # Output sigmoid temperature
-"bound_output_0_4": True                    # Constrain output to [0,4]
-```
+Tested with Python 3.11, PyTorch 2.11 and Transformers 5.17.
 
 ## Dataset
 
@@ -130,42 +91,109 @@ The model was trained and evaluated on the LDCTIQA2023 Challenge dataset:
 - **Test Data:**
   [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
 
+Default paths in `config.py` (override with command-line flags):
+
+```
+data/
+├── train/
+│   ├── train.json      # {"0000.tif": 3.2, ...}  filename -> MOS
+│   └── image/
+└── test/
+    ├── test.json
+    └── images/
+```
+
 ## Usage
+
+```mermaid
+flowchart LR
+    TR["data/train<br/>train.json + images"] --> T["train.py<br/>5-fold CV"]
+    T --> C["checkpoints/<br/>len2_fold1..5.pth<br/>len2_best.pth<br/>len2_config.json<br/>len2_cv_summary.json"]
+    TE["data/test<br/>test.json + images"] --> E["test.py<br/>per-fold + mean ± std"]
+    C --> E
+    C --> P["predict.py<br/>MOS for new images"]
+```
 
 ### Training
 
 ```bash
-# Train with 5-fold cross-validation
+# 5-fold cross-validation with the defaults in config.py
 python train.py
+
+# Custom paths / experiment name
+python train.py --json data/train/train.json --data-dir data/train/image \
+                --checkpoint-dir checkpoints --exp-name len2
+
+# Train only some folds, or with another prompt
+python train.py --folds 3
+python train.py --prompt "Assess LDCT image quality." --exp-name short_prompt
 ```
 
-The training script will:
-
-- Load and preprocess the dataset
-- Perform 5-fold cross-validation
-- Save the best model checkpoint based on validation loss for each fold
-- Copy the best fold model as `medsiglip_iqa_best.pth`
-- Log training/validation metrics (loss, MAE, RMSE, Pearson correlation) per
-  epoch
+For each fold, the epoch with the lowest validation loss is saved as
+`{exp}_fold{k}.pth`. The best fold (lowest `select_metric`, validation loss by
+default) is copied to `{exp}_best.pth`. Per-fold best-epoch metrics (loss, MAE,
+RMSE, Pearson) are written to `{exp}_cv_summary.json`.
 
 ### Testing
 
 ```bash
-# Evaluate on test set
-python test.py
+# All folds in a directory -> per-fold table, mean ± std, checkpoints/test_results.json
+python test.py --ckpt-dir checkpoints --exp-name len2
+
+# A single checkpoint
+python test.py --ckpt checkpoints/len2_best.pth
+
+# Custom test set and per-image predictions
+python test.py --ckpt-dir checkpoints --test-json data/test/test.json \
+               --test-dir data/test/images --save-preds predictions.csv
 ```
 
-Before running, update `config.py`:
-
-```python
-"checkpoint_path": "path/to/medsiglip_iqa_best.pth"
-```
-
-The test script outputs:
+The test script reports the challenge metrics:
 
 - **PLCC**: Pearson Linear Correlation Coefficient
 - **SROCC**: Spearman Rank Order Correlation Coefficient
 - **KROCC**: Kendall Rank Order Correlation Coefficient
+- **Overall**: PLCC + SROCC + KROCC
+
+### Inference
+
+```bash
+python predict.py --ckpt checkpoints/len2_fold3.pth scan1.tif scan2.tif --out predictions.csv
+```
+
+## Configuration
+
+All defaults live in `config.py`; the most important ones:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `model_name` | `google/medsiglip-448` | Backbone |
+| `image_size` | `448` | Input resolution |
+| `text_prompt` | `LEN2_PROMPT` | Prompt injected via FiLM |
+| `film_strength` | `1.0` | FiLM strength *s* (0 = off) |
+| `text_freeze` / `freeze_backbone` | `True` / `False` | Freeze text / vision encoder |
+| `sigmoid_tau` | `2.0` | Output sigmoid temperature |
+| `bound_output_0_4` | `True` | Map output to [0, 4] |
+| `learning_rate` / `weight_decay` | `1e-5` / `1e-4` | AdamW |
+| `batch_size` × `grad_accum_steps` | `4` × `2` | Effective batch size 8 |
+| `num_epochs` | `22` | Epochs per fold |
+| `T_max` / `eta_min` | `100` / `1e-7` | Cosine annealing |
+| `use_amp` | `True` | Mixed precision |
+| `num_folds` / `seed` | `5` / `42` | Cross-validation |
+| `rank_weight` / `mse_weight` / `rank_tau` | `1.0` / `0.0` / `0.5` | Loss (pure pairwise ranking) |
+| `select_metric` | `val_loss` | Best-fold selection (`mae` in arXiv v1) |
+| `early_stop_patience` | `None` | Early stopping (disabled) |
+
+### Prompts
+
+The default prompt (`LEN2_PROMPT`, ~25 BPE tokens):
+
+> Assess LDCT diagnostic image quality using noise, artifacts, contrast,
+> sharpness, and anatomical visibility; assign MOS from 0 to 4.
+
+MedSigLIP's text encoder has a hard 64-token limit. To reproduce the arXiv v1
+setup, set `"text_prompt": PAPER_V1_PROMPT` and `"select_metric": "mae"` in
+`config.py`.
 
 ## Model Architecture
 
@@ -175,6 +203,16 @@ The test script outputs:
 
 _Figure: Prompt-conditioned FiLM with multi-scale (global/local/texture)
 pooling._
+
+The MedSigLIP vision encoder turns a 448×448 slice into 32×32 = 1,024 patch
+tokens (d = 1,152). The frozen text encoder embeds the prompt, and a two-layer
+MLP maps it to FiLM parameters (γ, β) that modulate the tokens:
+$\tilde{H} = H \odot (1 + s\tanh\gamma) + s\beta$. Three pooling branches
+(global average, 4-region average, 2-bin max) feed separate regression heads,
+whose sub-scores are fused by an MLP and mapped to [0, 4] via
+$\hat{y} = 4\sigma(\mathrm{logit}/\tau)$. The implementation pools tokens from
+the second position onward (1,023 tokens); this is kept so the code matches the
+reported runs.
 
 ### Loss Function (Pairwise Ranking Loss)
 
@@ -186,45 +224,67 @@ $$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}
 where $\mathcal{P}$ is the set of non-tied pairs and
 $s_{ij}=\mathrm{sign}(y_i-y_j)$.
 
-## Evaluation Metrics
+## Results
 
-The model is evaluated using standard IQA correlation metrics:
+LDCTIQA2023 test set (300 images), default `len2` prompt. Numbers are from the
+extended version of the paper (under review).
 
-- **PLCC (Pearson Linear Correlation Coefficient)**: Measures linear correlation
-- **SROCC (Spearman Rank Order Correlation Coefficient)**: Measures monotonic
-  relationship
-- **KROCC (Kendall Rank Order Correlation Coefficient)**: Measures ordinal
-  association
+| Method | PLCC | SROCC | KROCC | Overall |
+| ------ | ---- | ----- | ----- | ------- |
+| **Ours** (3 seeds × 5 folds, mean ± std) | 0.9348 ± 0.009 | 0.9399 ± 0.006 | 0.7975 ± 0.011 | 2.6723 ± 0.025 |
+| **Ours** (best fold†) | 0.9578 | 0.9565 | 0.8310 | 2.7453 |
+| Challenge 1st place | 0.9491 | 0.9495 | 0.8440 | 2.7427 |
+| Challenge 2nd place | 0.9434 | 0.9414 | 0.7995 | 2.6843 |
+| Challenge 3rd place | 0.9402 | 0.9387 | 0.7930 | 2.6719 |
+| Challenge 4th place | 0.9362 | 0.9338 | 0.7851 | 2.6550 |
+| Challenge 5th place | 0.9278 | 0.9232 | 0.7691 | 2.6202 |
 
-Higher values (closer to 1.0) indicate better performance.
+† Seed 42, Fold 3: the maximum of 15 test-set evaluations (3 seeds × 5 folds),
+an optimistic upper bound rather than a head-to-head comparison. The multi-seed
+mean is the primary estimate.
+
+**Per-fold results (Seed 42):**
+
+| Fold | PLCC | SROCC | KROCC | Overall |
+| ---- | ---- | ----- | ----- | ------- |
+| 1 | 0.9404 | 0.9463 | 0.8124 | 2.6991 |
+| 2 | 0.9351 | 0.9426 | 0.8023 | 2.6801 |
+| 3 | **0.9578** | **0.9565** | **0.8310** | **2.7453** |
+| 4 | 0.9477 | 0.9451 | 0.8069 | 2.6996 |
+| 5 | 0.9346 | 0.9387 | 0.7950 | 2.6682 |
+| Mean ± std | 0.9431 ± 0.009 | 0.9459 ± 0.006 | 0.8095 ± 0.012 | 2.6985 ± 0.026 |
+
+**Prompt length (Seed 42, 5 folds, mean ± std):**
+
+| Tokens | PLCC | SROCC | KROCC | Overall |
+| ------ | ---- | ----- | ----- | ------- |
+| 5–15 | 0.9417 ± 0.006 | 0.9447 ± 0.003 | 0.8054 ± 0.006 | 2.6918 ± 0.013 |
+| **25–35 (default)** | **0.9431 ± 0.009** | **0.9459 ± 0.006** | **0.8095 ± 0.012** | **2.6985 ± 0.026** |
+| 55–65 | 0.9366 ± 0.011 | 0.9423 ± 0.006 | 0.8017 ± 0.011 | 2.6806 ± 0.026 |
+| > 100 | N/A (exceeds the 64-token limit) | | | |
+
+The three valid lengths span only 0.0179 Overall, so they are not separable at
+this precision.
+
+**arXiv v1** (detailed-rubric prompt, single best fold selected by validation
+MAE): PLCC 0.9575, SROCC 0.9561, KROCC 0.8301, Overall 2.7436.
 
 ## Pre-trained Weights
 
-Pre-trained model weights are available on Google Drive:
-
-- 📥
-  **[Download best_model.pth](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing)**
-
-**Test Results:**
-
-| PLCC   | SROCC  | KROCC  | OVERALL |
-| ------ | ------ | ------ | ------- |
-| 0.9575 | 0.9561 | 0.8301 | 2.7436  |
-
-To use the pre-trained model:
-
-1. Download `best_model.pth` from the link above
-2. Place it in the project root directory
-3. Set in `config.py`:
-
-```python
-"checkpoint_path": "best_model.pth"
-```
+- **`len2` 5-fold checkpoints:** coming soon.
+- **arXiv v1 checkpoint:**
+  [Google Drive](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing).
+  It was trained with the detailed-rubric prompt, so set
+  `"text_prompt": PAPER_V1_PROMPT` in `config.py` before using it:
+  ```bash
+  python test.py --ckpt best_model.pth
+  ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
-for details.
+This project is licensed under the Creative Commons Attribution-NonCommercial
+4.0 International License (CC BY-NC 4.0) - see the [LICENSE](LICENSE) file for
+details.
 
 ## Citation
 
