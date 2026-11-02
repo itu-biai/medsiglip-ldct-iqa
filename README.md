@@ -1,4 +1,6 @@
-# MedSigLIP for No-Reference Low-Dose CT Quality Assessment: Representation over Architecture, and What the Benchmark Rewards
+# A medical vision-language model for low-dose CT quality assessment succeeds through its pretrained representation and largely tracks image noise
+
+**Paper:** [arXiv:2511.12256](https://arxiv.org/abs/2511.12256)
 
 Official code for a prompt-conditioned MedSigLIP framework for no-reference
 image quality assessment (NR-IQA) of low-dose CT (LDCT). Clinical text prompts
@@ -38,7 +40,7 @@ this performance comes from:
 ### Intended use and limitations
 
 The model is trained only on noise and streak degradations, and it has a
-clinically significant **smoothness bias**: Gaussian-blurred images
+clinically important **smoothness bias**: Gaussian-blurred images
 (σ = 2.0) score on average +0.93 MOS above their originals, with 0% correct
 preference. **It should therefore not be used to rank denoising algorithms.**
 
@@ -214,7 +216,28 @@ mean is the primary estimate.
 
 ## Pre-trained Weights
 
-The 5-fold checkpoints (default prompt) will be released upon publication.
+- **arXiv v1 checkpoint:**
+  [Google Drive](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing).
+  A single model trained with the detailed-rubric prompt. Set
+  `"text_prompt": RUBRIC_PROMPT` in `config.py` before evaluating it:
+  ```bash
+  python test.py --ckpt best_model.pth
+  ```
+- **5-fold checkpoints (default prompt):** will be released upon publication.
+
+## Citation
+
+```bibtex
+@misc{demiroglu2025medsiglip,
+  title         = {A medical vision-language model for low-dose {CT} quality assessment succeeds through its pretrained representation and largely tracks image noise},
+  author        = {Demiroglu, Tolga and Unal, Mehmet Ozan and Ertas, Metin and Yildirim, Isa},
+  year          = {2025},
+  eprint        = {2511.12256},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  doi           = {10.48550/arXiv.2511.12256}
+}
+```
 
 ## License
 
