@@ -82,7 +82,8 @@ preference. **It should therefore not be used to rank denoising algorithms.**
    hf auth login
    ```
 
-Tested with Python 3.11, PyTorch 2.11 and Transformers 5.17.
+Tested with Python 3.11 / PyTorch 2.11 / Transformers 5.17 and with
+Python 3.13 / PyTorch 2.14 / Transformers 5.22.
 
 ## Dataset
 
@@ -216,14 +217,28 @@ mean is the primary estimate.
 
 ## Pre-trained Weights
 
-- **arXiv v1 checkpoint:**
-  [Google Drive](https://drive.google.com/drive/folders/1ShbXiggqHdVGdCkYe8IK2RKP6vErSogV?usp=sharing).
-  A single model trained with the detailed-rubric prompt. Set
-  `"text_prompt": RUBRIC_PROMPT` in `config.py` before evaluating it:
-  ```bash
-  python test.py --ckpt best_model.pth
-  ```
-- **5-fold checkpoints (default prompt):** will be released upon publication.
+The five cross-validation checkpoints reported in the paper (Seed 42, default
+prompt; about 3.6 GB each, including the full MedSigLIP backbone):
+
+| Fold | Checkpoint | PLCC | SROCC | KROCC | Overall |
+| ---- | ---------- | ---- | ----- | ----- | ------- |
+| 1 | [medsiglip_iqa_fold1.pth](https://drive.google.com/file/d/1Q4vsPBp8ux6b2zxestmCjZcFOd3qYV5S/view?usp=sharing) | 0.9404 | 0.9464 | 0.8125 | 2.6992 |
+| 2 | [medsiglip_iqa_fold2.pth](https://drive.google.com/file/d/1IwGnu5Sr3l3HbZ41oRMj_x_QjXESywWD/view?usp=sharing) | 0.9352 | 0.9428 | 0.8025 | 2.6805 |
+| 3 | [medsiglip_iqa_fold3.pth](https://drive.google.com/file/d/1aBb9n8N0lWR37v-PbY5d9ZDrrilm_Qgv/view?usp=sharing) | 0.9578 | 0.9565 | 0.8310 | 2.7453 |
+| 4 | [medsiglip_iqa_fold4.pth](https://drive.google.com/file/d/101fKsR7_5isqr1DhQGvd6QeCzb3t0n39/view?usp=sharing) | 0.9477 | 0.9451 | 0.8069 | 2.6997 |
+| 5 | [medsiglip_iqa_fold5.pth](https://drive.google.com/file/d/1AIVkqIWKNSjd3RdgNCd3H1nuUqBblR6g/view?usp=sharing) | 0.9346 | 0.9387 | 0.7951 | 2.6685 |
+| | **Mean ± std** | 0.9431 ± 0.0087 | 0.9459 ± 0.0059 | 0.8096 ± 0.0121 | 2.6986 ± 0.0262 |
+
+Put the files in `checkpoints/` and run:
+
+```bash
+python test.py --ckpt-dir checkpoints --exp-name medsiglip_iqa
+```
+
+The checkpoints were trained with `DEFAULT_PROMPT`, which `test.py` and
+`predict.py` read from `config.py`. The table is the output of this command on
+the 300 test images (RTX 4060, PyTorch 2.14, Transformers 5.22); it matches the
+paper's per-fold results to within 0.0004 Overall (fold 3 exactly).
 
 ## Citation
 
