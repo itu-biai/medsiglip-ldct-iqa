@@ -1,0 +1,333 @@
+# When less noise does not mean better quality: evaluating vision-language models for low-dose CT image quality assessment
+
+Official code for a prompt-conditioned MedSigLIP framework for no-reference
+image quality assessment (NR-IQA) of low-dose CT (LDCT). Clinical text prompts
+are injected into patch-token features via Feature-wise Linear Modulation
+(FiLM), the modulated tokens are aggregated by global, local and texture
+pooling branches, and the model is trained with a pairwise ranking loss to
+predict the Mean Opinion Score (MOS, 0–4) of a CT slice.
+
+![Model Architecture](assets/architecture.png)
+
+_A low-dose CT slice is encoded into 1,024 patch tokens (d = 1,152) by the
+MedSigLIP vision encoder. The frozen MedSigLIP text encoder embeds a clinical
+prompt, and a FiLM module maps it to per-channel scale γ and shift β. The
+modulated tokens are pooled by three parallel branches (global average, local
+4-region average, 2-bin max), and the sub-scores are fused by an MLP and
+bounded to [0, 4] by a temperature-scaled sigmoid (τ = 2.0)._
+
+## Key Findings
+
+On the LDCTIQA2023 benchmark, multi-seed evaluation (3 seeds × 5 folds) gives
+PLCC = 0.9348 ± 0.0086 and Overall = 2.6723 ± 0.0254, at approximately
+3rd-place level among the challenge entries. Controlled experiments show that
+neither the added components nor the medical representation explains this
+performance:
+
+- **Input resolution, not the medical backbone.** At 224×224 every other
+  backbone falls below MedSigLIP, but most of that gap is input size. An
+  ImageNet-pretrained EfficientNet-B0 without text input, trained at the same
+  448×448 resolution, reaches 2.681 Overall, level with MedSigLIP (2.672;
+  difference 0.009, P = 0.53) with about one seventieth of its trainable
+  parameters.
+- **Medical pretraining has no consistent effect.** Each general-domain model
+  was trained with the settings of its medical counterpart at 448×448.
+  Medical fine-tuning adds 0.030 to SigLIP (MedSigLIP), whereas BiomedCLIP
+  scores 0.086 below CLIP ViT-B/16, which has the highest mean (2.702) but is
+  not reliably above MedSigLIP (P = 0.23).
+- **FiLM and pooling add little.** FiLM gives no reliable gain on any backbone
+  or at either input resolution (CLIP scores 2.7021 with its own text encoder
+  and 2.7026 without text input, P = 0.88), and it modulates only 3–4% of channels,
+  nearly identically across prompts (cosine similarity > 0.985). The three
+  pooling branches are near-redundant (|ρ| > 0.99), yielding only a
+  within-noise gain.
+- **What the benchmark rewards.** A single high-frequency energy scalar
+  correlates with radiologist MOS at 98% of the model's own correlation and,
+  after a monotone rescaling fitted on the training labels, reaches
+  Overall = 2.618, level with the 5th-place entry.
+
+### Intended use and limitations
+
+The model is trained only on noise and streak degradations, and it has a
+**smoothness bias**: Gaussian-blurred images
+(σ = 2.0) score on average +0.93 MOS above their originals, with 0% correct
+preference. The same test on CLIP, BiomedCLIP and EfficientNet-B0 trained at
+448×448 points the same way (the blurred copy scores higher for 81–96% of
+images), so the bias comes from the benchmark, not from this backbone.
+**Models trained this way should therefore not be used to rank denoising
+algorithms.**
+
+## Repository Structure
+
+```
+.
+├── config.py           # Default configuration and prompts (DEFAULT_PROMPT, RUBRIC_PROMPT)
+├── data.py             # Annotation loading, image IO, dataset, transforms, processor
+├── model.py            # PromptedMultiScaleMedSigLIPIQA, RankNetMSELoss, checkpoint helpers
+├── train.py            # 5-fold cross-validation training
+├── test.py             # Test-set evaluation (PLCC, SROCC, KROCC), single or all folds
+├── predict.py          # MOS prediction for individual images
+├── requirements.txt    # Python dependencies
+├── LICENSE             # CC BY-NC 4.0
+├── baselines/
+│   └── clip_vitb16_448/  # CLIP ViT-B/16 baseline at 448×448: train.py, test.py
+└── assets/
+    └── architecture.png
+```
+
+## Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/itu-biai/medsiglip-ldct-iqa.git
+   cd medsiglip-ldct-iqa
+   ```
+
+2. Create an environment and install dependencies:
+   ```bash
+   conda create -n medsiglip_ldct_iqa python=3.11
+   conda activate medsiglip_ldct_iqa
+   pip install -r requirements.txt
+   ```
+
+3. Get access to MedSigLIP. `google/medsiglip-448` is a gated model: accept the
+   Health AI Developer Foundations terms on its
+   [Hugging Face page](https://huggingface.co/google/medsiglip-448), then log in:
+   ```bash
+   hf auth login
+   ```
+
+Tested with Python 3.11 / PyTorch 2.11 / Transformers 5.17 and with
+Python 3.13 / PyTorch 2.14 / Transformers 5.22.
+
+## Dataset
+
+LDCTIQA2023 Challenge: 1,000 training and 300 test images (2D axial slices)
+with radiologist-assigned MOS on a 0–4 scale.
+
+- **Training Data:**
+  [Zenodo - LDCT-IQA 2023](https://zenodo.org/records/7833096#.ZEFywOxBzn5)
+- **Test Data:**
+  [Google Drive](https://drive.google.com/file/d/1DbZfTj4it-3QRTuJO73r1iQyHLRwPS6H/view)
+
+Default paths in `config.py` (override with command-line flags):
+
+```
+data/
+├── train/
+│   ├── train.json      # {"0000.tif": 3.2, ...}  filename -> MOS
+│   └── image/
+└── test/
+    ├── test.json
+    └── images/
+```
+
+## Usage
+
+```mermaid
+flowchart LR
+    TR["data/train<br/>train.json + images"] --> T["train.py<br/>5-fold CV"]
+    T --> C["checkpoints/<br/>medsiglip_iqa_fold1..5.pth<br/>medsiglip_iqa_best.pth<br/>medsiglip_iqa_config.json<br/>medsiglip_iqa_cv_summary.json"]
+    TE["data/test<br/>test.json + images"] --> E["test.py<br/>per-fold + mean ± std"]
+    C --> E
+    C --> P["predict.py<br/>MOS for new images"]
+```
+
+### Training
+
+```bash
+# 5-fold cross-validation with the defaults in config.py
+python train.py
+
+# Custom paths / experiment name
+python train.py --json data/train/train.json --data-dir data/train/image \
+                --checkpoint-dir checkpoints --exp-name medsiglip_iqa
+
+# Train only some folds, or with another prompt
+python train.py --folds 3
+python train.py --prompt "Assess LDCT image quality." --exp-name short_prompt
+```
+
+For each fold, the epoch with the lowest validation loss is saved as
+`{exp_name}_fold{k}.pth`, and the best fold is copied to `{exp_name}_best.pth`.
+Per-fold best-epoch metrics are written to `{exp_name}_cv_summary.json`, and
+the prompt and hyperparameters to `{exp_name}_config.json`. The prompt
+embedding is not stored inside the `.pth`; `test.py` and `predict.py` read it
+back from `{exp_name}_config.json`, so a checkpoint is always evaluated with
+the prompt it was trained with.
+
+### Testing
+
+```bash
+# All folds in a directory -> per-fold table, mean ± std, checkpoints/test_results.json
+python test.py --ckpt-dir checkpoints --exp-name medsiglip_iqa
+
+# A single checkpoint
+python test.py --ckpt checkpoints/medsiglip_iqa_best.pth
+
+# Custom test set and per-image predictions
+python test.py --ckpt-dir checkpoints --test-json data/test/test.json \
+               --test-dir data/test/images --save-preds predictions.csv
+```
+
+Reported metrics: PLCC, SROCC, KROCC and their sum (Overall), following the
+challenge protocol.
+
+### Inference
+
+```bash
+python predict.py --ckpt checkpoints/medsiglip_iqa_fold3.pth scan1.tif scan2.tif --out predictions.csv
+```
+
+## Configuration
+
+All defaults (paths, hyperparameters, prompt, FiLM strength, loss weights) are
+in `config.py`; the most common ones can be overridden from the command line
+(`python train.py --help`).
+
+### Prompts
+
+The default prompt (`DEFAULT_PROMPT`, ~25 BPE tokens) names the perceptual
+dimensions radiologists attend to without enumerating the full rubric:
+
+> Assess LDCT diagnostic image quality using noise, artifacts, contrast,
+> sharpness, and anatomical visibility; assign MOS from 0 to 4.
+
+`RUBRIC_PROMPT` holds the detailed-rubric variant. MedSigLIP's text encoder
+has a hard 64-token limit.
+
+### Loss
+
+Pure pairwise ranking loss following RankNet with temperature
+$\tau_{\mathrm{rank}}=0.5$:
+
+$$\mathcal{L}_{\mathrm{rank}} = \frac{1}{|\mathcal{P}|}\sum_{(i,j)\in\mathcal{P}} \log\left(1+e^{\frac{-s_{ij}(\hat y_i-\hat y_j)}{\tau_{\mathrm{rank}}}}\right)$$
+
+where $\mathcal{P}$ is the set of non-tied pairs and
+$s_{ij}=\mathrm{sign}(y_i-y_j)$.
+
+### Implementation note
+
+SigLIP has no CLS token; the model pools patch tokens from the second position
+onward (1,023 of the 1,024 tokens). This is kept so that the code matches the
+reported runs.
+
+## Results
+
+LDCTIQA2023 test set (300 images), default prompt.
+
+| Method | PLCC | SROCC | KROCC | Overall |
+| ------ | ---- | ----- | ----- | ------- |
+| **Ours** (3 seeds × 5 folds, mean ± std) | 0.9348 ± 0.009 | 0.9399 ± 0.006 | 0.7975 ± 0.011 | 2.6723 ± 0.025 |
+| **Ours** (best fold†) | 0.9578 | 0.9565 | 0.8310 | 2.7453 |
+| Challenge 1st place | 0.9491 | 0.9495 | 0.8440 | 2.7427 |
+| Challenge 2nd place | 0.9434 | 0.9414 | 0.7995 | 2.6843 |
+| Challenge 3rd place | 0.9402 | 0.9387 | 0.7930 | 2.6719 |
+| Challenge 4th place | 0.9362 | 0.9338 | 0.7851 | 2.6550 |
+| Challenge 5th place | 0.9278 | 0.9232 | 0.7691 | 2.6202 |
+
+† Seed 42, Fold 3: the maximum of 15 test-set evaluations (3 seeds × 5 folds),
+an optimistic upper bound rather than a head-to-head comparison. The multi-seed
+mean is the primary estimate.
+
+### Backbone comparison
+
+Overall score on the same test set, mean ± s.d. across three seed-level means
+(Seeds 42, 123 and 456, each averaged over 5 folds). FiLM is applied where a
+text encoder is listed; the EfficientNet-B0 and BiomedCLIP rows at 448 differ
+from those at 224 only in input size. CLIP is trained exactly as BiomedCLIP at
+448, with and without text input, and SigLIP exactly as MedSigLIP, so each pair differs only in the
+pretrained weights.
+
+| Backbone | Text encoder | Input | Overall |
+| -------- | ------------ | ----- | ------- |
+| EfficientNet-B0 | none | 224 | 2.5956 ± 0.004 |
+| EfficientNet-B0 | PubMedBERT | 224 | 2.6021 ± 0.012 |
+| ResNet-18 | none | 224 | 2.5352 ± 0.003 |
+| ResNet-18 | PubMedBERT | 224 | 2.5238 ± 0.012 |
+| EfficientNet-B0 | none | 448 | 2.6810 ± 0.007 |
+| EfficientNet-B0 | PubMedBERT | 448 | 2.6827 ± 0.008 |
+| BiomedCLIP | BiomedCLIP | 224 | 2.4637 ± 0.012 |
+| BiomedCLIP | BiomedCLIP | 448 | 2.6166 ± 0.008 |
+| CLIP ViT-B/16 | CLIP | 448 | 2.7021 ± 0.005 |
+| CLIP ViT-B/16 | none | 448 | 2.7026 ± 0.0004 |
+| SigLIP | SigLIP | 448 | 2.6428 ± 0.015 |
+| **MedSigLIP** (this repository) | MedSigLIP | 448 | 2.6723 ± 0.025 |
+
+## Pre-trained Weights
+
+The five cross-validation checkpoints reported in the paper (Seed 42, default
+prompt; about 3.6 GB each, including the full MedSigLIP backbone):
+
+| Fold | Checkpoint | PLCC | SROCC | KROCC | Overall |
+| ---- | ---------- | ---- | ----- | ----- | ------- |
+| 1 | [medsiglip_iqa_fold1.pth](https://drive.google.com/file/d/1Q4vsPBp8ux6b2zxestmCjZcFOd3qYV5S/view?usp=sharing) | 0.9404 | 0.9464 | 0.8125 | 2.6992 |
+| 2 | [medsiglip_iqa_fold2.pth](https://drive.google.com/file/d/1IwGnu5Sr3l3HbZ41oRMj_x_QjXESywWD/view?usp=sharing) | 0.9352 | 0.9428 | 0.8025 | 2.6805 |
+| 3 | [medsiglip_iqa_fold3.pth](https://drive.google.com/file/d/1aBb9n8N0lWR37v-PbY5d9ZDrrilm_Qgv/view?usp=sharing) | 0.9578 | 0.9565 | 0.8310 | 2.7453 |
+| 4 | [medsiglip_iqa_fold4.pth](https://drive.google.com/file/d/101fKsR7_5isqr1DhQGvd6QeCzb3t0n39/view?usp=sharing) | 0.9477 | 0.9451 | 0.8069 | 2.6997 |
+| 5 | [medsiglip_iqa_fold5.pth](https://drive.google.com/file/d/1AIVkqIWKNSjd3RdgNCd3H1nuUqBblR6g/view?usp=sharing) | 0.9346 | 0.9387 | 0.7951 | 2.6685 |
+| | **Mean ± std** | 0.9431 ± 0.0087 | 0.9459 ± 0.0059 | 0.8096 ± 0.0121 | 2.6986 ± 0.0262 |
+
+Put the files in `checkpoints/` and run:
+
+```bash
+python test.py --ckpt-dir checkpoints --exp-name medsiglip_iqa
+```
+
+The checkpoints were trained with `DEFAULT_PROMPT`, which `test.py` and
+`predict.py` read from `config.py`. The table is the output of this command on
+the 300 test images (RTX 4060, PyTorch 2.14, Transformers 5.22); it matches the
+paper's per-fold results to within 0.0004 Overall (fold 3 exactly).
+
+### CLIP ViT-B/16 baseline
+
+The general-domain CLIP ViT-B/16 baseline at 448×448 (with its own text
+encoder) has the highest mean in the backbone comparison, so its scripts and
+weights are released as well. The five checkpoints (about 0.36 GB each) come
+from a Seed-42 retraining with the script in `baselines/clip_vitb16_448/`;
+the Seed-42 run behind the backbone table scored 2.6972 Overall, and its
+checkpoints were not kept.
+
+| Fold | Checkpoint | PLCC | SROCC | KROCC | Overall |
+| ---- | ---------- | ---- | ----- | ----- | ------- |
+| 1 | [clip_vitb16_448_fold1.pth](https://drive.google.com/file/d/1S2qEOPhroVf7PX9WucJtjrJCZlUZ_MAw/view?usp=sharing) | 0.9399 | 0.9414 | 0.7988 | 2.6801 |
+| 2 | [clip_vitb16_448_fold2.pth](https://drive.google.com/file/d/1G1ppG511nw56iZttXfthmX3RU8w_zLlx/view?usp=sharing) | 0.9506 | 0.9516 | 0.8189 | 2.7211 |
+| 3 | [clip_vitb16_448_fold3.pth](https://drive.google.com/file/d/1eImUeZS-l-iz6jTB4a3Kb8uEOcfgDJKT/view?usp=sharing) | 0.9445 | 0.9522 | 0.8203 | 2.7170 |
+| 4 | [clip_vitb16_448_fold4.pth](https://drive.google.com/file/d/1k-zBdFvTMrMSmOJFy437vhm00nlBCU5r/view?usp=sharing) | 0.9436 | 0.9457 | 0.8079 | 2.6973 |
+| 5 | [clip_vitb16_448_fold5.pth](https://drive.google.com/file/d/17734NC4M1zYirzP9wd8mrPTawvn63TD3/view?usp=sharing) | 0.9421 | 0.9494 | 0.8134 | 2.7049 |
+| | **Mean ± std** | 0.9441 ± 0.0036 | 0.9481 ± 0.0040 | 0.8119 ± 0.0079 | 2.7041 ± 0.0147 |
+
+The same files are mirrored in the
+[GitHub release](https://github.com/itu-biai/medsiglip-ldct-iqa/releases/tag/clip-vitb16-448).
+
+Put the files in `checkpoints/clip_vitb16_448/` and run:
+
+```bash
+pip install open_clip_torch timm
+python baselines/clip_vitb16_448/test.py
+```
+
+The table is the output of this command on the 300 test images (RTX 4060,
+PyTorch 2.14, open_clip 4.2, timm 1.0), identical to the values obtained on
+the training machine. `python baselines/clip_vitb16_448/train.py` retrains
+the five folds; data and checkpoint paths are set by the environment
+variables listed at the top of each script. This baseline uses the detailed
+rubric prompt, a mixed ranking and MSE loss and a partly frozen encoder, as
+in the paper's Supplementary Table S11.
+
+## License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial
+4.0 International License (CC BY-NC 4.0) - see the [LICENSE](LICENSE) file for
+details.
+
+## Acknowledgements
+
+- [Google MedSigLIP](https://huggingface.co/google/medsiglip-448) for the
+  pretrained medical vision-language model
+- [LDCT-IQA Challenge](https://ldctiqac2023.grand-challenge.org/) for the
+  dataset
+
+## Contact
+
+For questions and feedback, please open an issue in the GitHub repository.
